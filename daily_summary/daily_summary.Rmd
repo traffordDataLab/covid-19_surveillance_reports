@@ -1,0 +1,590 @@
+---
+title: "COVID-19 surveillance summary"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+library(tidyverse) ; library(sf) ; library(lubridate) ; library(zoo) ; library(reactable) ; library(classInt) ; library(leaflet) ; library(htmltools) ; library(htmlwidgets)
+
+# UPDATE POSITIVITY RATE!! #
+# Source: PHE Daily COVID-19 Surveillance Reports
+fortnight_ending <- as.Date("2020-09-16")
+positivity <- tribble(
+  ~pillar, ~cases, ~tests,
+  "Pillar 1", NA, NA,
+  "Pillar 2", NA, NA,
+  "Total", NA, NA) %>% 
+  mutate(case_rate = round(cases/237354*100000,1),
+         test_rate = round(tests/237354*100000,0),
+         positivity_rate = round(cases/tests*100,1)) %>% 
+  select(pillar, tests, test_rate, positivity_rate)
+
+# Confirmed cases: official sensitive data
+# Source: PHE Covid-19 Situational Awareness Explorer
+cases <- read_csv("../data/data.csv") %>% 
+  mutate(date = as.Date(`Specimen Date`, format = "%Y-%m-%d"))
+
+# Confirmed cases: open data
+# Source: PHE Coronavirus Dashboard, Public Health England
+# URL: https://coronavirus.data.gov.uk
+phe_dashboard <- read_csv("https://coronavirus.data.gov.uk/downloads/csv/coronavirus-cases_latest.csv") %>% 
+  filter(`Area type` %in% c("nation", "ltla"),
+         `Area name` %in% c("Bolton", "Bury", "Manchester", "Oldham", "Rochdale", "Salford", "Stockport", "Tameside", "Trafford", "Wigan", "England")) %>% 
+  mutate(date = as.Date(`Specimen date`, format = "%Y-%m-%d")) %>% 
+  select(date,
+         area_code = `Area code`,
+         area_name = `Area name`,
+         new_cases = `Daily lab-confirmed cases`) %>% 
+  arrange(date) %>% 
+  group_by(area_code, area_name) %>%
+  complete(date = seq.Date(min(date), max(date), by = "day")) %>% 
+  mutate(new_cases = replace_na(new_cases, 0)) %>% 
+  ungroup() %>% 
+  fill(area_name) %>%
+  bind_rows(
+    filter(., area_name != "England") %>% 
+      group_by(., date) %>%
+      summarise(area_code = "E11000001",
+                area_name = "Greater Manchester",
+                date = unique(date),
+                new_cases = sum(new_cases))
+  ) 
+
+# Mid-2019 population estimates
+# Source: Nomis / ONS
+population <- read_csv("../data/population.csv")
+
+# Mid-2018 population estimates for electoral wards
+# Source: Nomis / ONS
+ward_population <- st_drop_geometry(st_read("../data/geospatial/wards.geojson")) %>% 
+  select(wd19nm, population)
+
+# Trafford residents by age and gender
+# Source: Nomis / ONS
+ageband <- read_csv("../data/ageband.csv")
+
+# Trafford residents by ethnic group
+# Source: 2011 Census, Nomis / ONS
+ethnicity <- read_csv("../data/ethnicity.csv")
+
+# Trafford postcodes
+# Source: ONS Open Geography Portal
+postcodes <- read_csv("../data/geospatial/postcodes.csv")
+
+# Middle-layer Super Output Areas in Trafford
+# Source: ONS Open Geography Portal
+msoa_boundaries <- st_read("../data/geospatial/msoa.geojson")
+```
+
+```{css}
+@import url('https://fonts.googleapis.com/css2?family=Lato&display=swap');
+.div {
+  font-family: 'Lato', sans-serif;
+}
+.title {
+  font-size: 16px;
+  font-weight: bold;
+}
+.subtitle {
+  margin: 8px 0;
+  font-size: 14px;
+}
+.caption {
+  text-align: right;
+  font-size: 12px;
+  color: #212121;
+}
+.leaflet-control.legend {
+  background: rgba(255,255,255,0.75);
+}
+```
+
+*This summary draws on a number of PHE data sources which have different publication times so the most recent reporting date will vary slightly.*
+
+<br />
+```{r}
+# 7-day moving average
+moving_average <- cases %>% 
+  group_by(date) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  arrange(date) %>% 
+  complete(date = seq.Date(min(date), max(date), by = "day")) %>% 
+  mutate(n = replace_na(n, 0)) %>% 
+  ungroup() %>% 
+  fill(date) %>% 
+  mutate(seven_day = round(rollmean(n, 7, align = "right", fill = NA),1)) %>%
+  filter(date == max(date))
+
+# Weekly cases
+current_week <- cases %>% 
+  group_by(date) %>% 
+  summarise(n = n()) %>% 
+  filter(date >= max(date)-days(6))
+
+previous_week <- cases %>% 
+  group_by(date) %>% 
+  summarise(n = n()) %>% 
+  filter(date >= max(date)-days(13), date < max(date)-days(6))
+
+# Pillar
+pillar <- cases %>% 
+  # last 7 days
+  filter(date >= max(date)-days(6) & date <= max(date)) %>% 
+  group_by(Pillar) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  mutate(percent = round(n/sum(n)*100,1))
+```
+
+---
+
+- The 7-day average number of daily confirmed cases in Trafford on `r format(max(cases$date),format = "%A %d %B %Y")` was **`r pull(moving_average, seven_day)`**.
+- There were **`r sum(current_week$n)`** confirmed cases during the week ending `r format(max(current_week$date), '%A %d %B')` which is equivalent to **`r round(sum(current_week$n)/237354*100000,1)`** cases per 100,000 residents. **`r sum(previous_week$n)`** cases or **`r round(sum(previous_week$n)/237354*100000,1)`** cases per 100,000 residents were confirmed during the previous week.
+- The highest number of daily cases during the past week were reported on **`r format(pull(select(filter(current_week, n == max(n)), date)), '%A %d %B')`** with **`r max(current_week$n)`** cases.
+- **`r paste0(pull(filter(pillar, Pillar == "PILLAR 1"), percent),"%")`** (**`r pull(filter(pillar, Pillar == "PILLAR 1"), n)`**) of cases were tested under Pillar 1 and **`r paste0(pull(filter(pillar, Pillar == "PILLAR 2"), percent),"%")`** (**`r pull(filter(pillar, Pillar == "PILLAR 2"), n)`**) under Pillar 2.
+
+---
+
+<br />
+<div class="container-fluid">
+<div class = "row">
+<div class = "col-sm-7">
+<div class = "div">
+```{r}
+historic_cases <- read_csv("../data/data.csv") %>% 
+  mutate(date = as.Date(`Specimen Date`, format = "%Y-%m-%d")) %>% 
+  filter(date <= max(date)-days(1)) %>% 
+  group_by(date) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  arrange(date) %>% 
+  complete(date = seq.Date(min(date), max(date), by = "day")) %>% 
+  mutate(n = replace_na(n, 0)) %>% 
+  ungroup() %>% 
+  fill(date) %>% 
+  mutate(ma_cases = rollmean(n, 7, align = "left", fill = NA))
+
+div(class = "subtitle",
+    div(class = "title", "Epidemic curve of daily confirmed new cases"),
+    paste("Trafford,", format(min(historic_cases$date), "%d %B"), "to", format(max(historic_cases$date), "%d %B %Y")))
+
+ggplot() +
+  geom_hline(yintercept = 0, size = 0.3, colour = "#333333") +
+  geom_col(data = historic_cases, aes(x = date, y = n), fill = ifelse(historic_cases$date >= max(historic_cases$date)-2, "#bdbdbd", "#39809E"), alpha = 0.6) +
+  geom_line(data = historic_cases, aes(x = date, y = ma_cases, colour = "ma_cases"), size = 1) +
+  scale_colour_manual(values = c("ma_cases" = "#39809E"), name = NULL, labels = "7-day rolling average") +
+  scale_x_date(expand = c(0.005, 0.005), date_labels = "%B") +
+  scale_y_continuous(expand = c(0.005, 0.005), breaks = function(x) unique(
+    floor(pretty(seq(0, (max(x) + 1) * 1.1)))), position = "right") +
+  labs(x = "Specimen date", y = NULL, title = NULL, subtitle = NULL, caption = NULL, tag = "Incomplete cases are shaded in grey") +
+  theme_minimal() +
+  theme(plot.margin = unit(rep(0.5, 4), "cm"),
+        panel.background = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "top", 
+        legend.justification = "left",
+        legend.direction = "horizontal",
+        legend.text = element_text(size = 12),
+        axis.title.x = element_text(size = 10, hjust = 0, margin = margin(t = 10)),
+        plot.tag.position = c(0.6, 0.9),
+        plot.tag = element_text(size = 9, colour = "#757575", hjust = 0),
+        axis.text = element_text(size = 12))
+
+div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer"))
+```
+</div>
+</div>
+
+<div class = "col-sm-5">
+<div class = "div">
+```{r positivity}
+positivity_table <- reactable(
+  positivity, 
+  resizable = TRUE,
+  sortable = FALSE,
+  defaultColDef = colDef(align = "left"),
+  defaultColGroup = colGroup(align = "left"), 
+  columns = list(
+    pillar = colDef(name = "Pillar"),
+    tests = colDef(name = "n", format = colFormat(separators = TRUE)),
+    test_rate = colDef(name = "per 100,000", format = colFormat(separators = TRUE)),
+    positivity_rate = colDef(name = "Positivity rate")
+    ),
+  columnGroups = list(
+    colGroup(name = "Tests", columns = c("tests", "test_rate"))
+  )
+  )
+
+div(class = "div",
+    div(class = "subtitle",
+        div(class = "title", "Testing volume and positivity rate"),
+        paste("Trafford, 14 days ending ", format(fortnight_ending, "%d %B"))
+        ),
+    br(),
+    positivity_table,
+    div(class = "caption", p("Source: PHE Daily COVID-19 Surveillance Reports"))
+    )
+```
+</div>
+</div>
+</div>
+
+<div class = "row">
+<div class = "col-sm-12">
+<div class = "div">
+```{r, weekly cases}
+weekly_cases <- phe_dashboard %>% 
+  mutate(period = case_when(
+    date >= max(date)-days(8) & date <= max(date)-days(2) ~ "current_week",
+    date >= max(date)-days(15) & date <= max(date)-days(9) ~ "previous_week"
+  )) %>% 
+  filter(!is.na(period)) %>% 
+  select(-date) %>%
+  group_by(area_code, area_name, period) %>% 
+  summarise(total_cases = sum(new_cases)) %>% 
+  pivot_wider(names_from = period, values_from = total_cases) %>% 
+  select(area_code, area_name, previous_week, current_week) %>%
+  left_join(population, by = "area_code") %>% 
+  mutate(previous_week_rate = round(previous_week/population*100000,1),
+         current_week_rate = round(current_week/population*100000,1),
+         change = current_week-previous_week,
+         change_rate = round(change/population*100000,1)) %>% 
+  ungroup() %>%
+  select(area_name, previous_week_rate, current_week_rate, change_rate) %>% filter(area_name != c("Greater Manchester", "England"))
+
+league_table <- reactable(weekly_cases, 
+          defaultPageSize = 12,
+          highlight = TRUE, 
+          height = "auto",
+          compact = TRUE,
+          borderless = FALSE,
+          wrap = FALSE,
+          resizable = TRUE,
+          defaultSorted = "current_week_rate",
+          defaultSortOrder = "desc",
+          defaultColDef = colDef(align = "left"),
+          rowStyle = function(index) {
+            if (weekly_cases[index, "current_week_rate"] >= 50) {
+              list(background = "rgba(220,24,65,0.1)")
+              } else if (weekly_cases[index, "current_week_rate"] >= 25) {
+                list(background = "rgba(230,184,63,0.1)")
+                } else {
+                  list(background = "rgba(40,123,40,0.1)")
+                  }
+            },
+          columns = list(
+            area_name = colDef(name = "", sortable = FALSE, align = "left"),
+            previous_week_rate = colDef(header = paste(format(max(phe_dashboard$date)-days(15),'%d %B'),"-", format(max(phe_dashboard$date)-days(9),'%d %B')),
+                                        align = "left"),
+            current_week_rate = colDef(header = paste(format(max(phe_dashboard$date)-days(8),'%d %B'),"-", format(max(phe_dashboard$date)-days(2),'%d %B')), 
+                                       align = "left"),
+            change_rate = colDef(name = "Change", align = "left"))
+)
+
+div(class = "div",
+    div(class = "subtitle",
+        div(class = "title", "Weekly incidence per 100,000 population by local authority"),
+        paste("Greater Manchester, ", format(max(phe_dashboard$date)-days(15), "%d %B"), "to", format(max(phe_dashboard$date)-days(2), "%d %B %Y"))
+        ),
+    br(),
+    league_table,
+    div(class = "caption", p("Source: PHE Coronavirus Dashboard"))
+    )
+```
+</div>
+</div>
+</div>
+
+<div class = "row">
+<div class = "col-sm-12">
+<div class = "div">
+```{r, local trend, fig.width = 10, dev = 'svg'}
+local_trend <- phe_dashboard %>% 
+  # exclude incomplete cases
+  filter(date <= max(date)-days(2),
+         !area_name %in% c("Greater Manchester", "England")) %>% 
+  # retain last 10 weeks
+  filter(date >= max(date)-weeks(10)) %>%
+  mutate(week = floor_date(date, "1 week", week_start = wday(min(date)))) %>% 
+  group_by(area_code, area_name, week) %>% 
+  summarise(total_cases = sum(new_cases)) %>% 
+  ungroup() %>% 
+  left_join(population, by = "area_code") %>% 
+  mutate(rate_cases = round(total_cases/population*100000,1))
+
+england_cases <- phe_dashboard %>% 
+  # exclude incomplete cases
+  filter(date <= max(date)-days(2),
+         area_name == "England") %>% 
+  # retain last 10 weeks
+  filter(date >= max(date)-weeks(10)) %>%
+  mutate(week = floor_date(date, "1 week", week_start = wday(min(date)))) %>% 
+  group_by(area_code, area_name, week) %>% 
+  summarise(total_cases = sum(new_cases)) %>% 
+  ungroup() %>% 
+  left_join(population, by = "area_code") %>% 
+  mutate(rate_cases = round(total_cases/population*100000,1))
+
+div(class = "subtitle",
+    div(class = "title", "Weekly incidence per 100,000 population by local authority"),
+    paste("Greater Manchester (England = grey line),", format(max(phe_dashboard$date-weeks(10)), "%d %B"), "to", format(max(phe_dashboard$date-days(2)), "%d %B %Y")))
+
+ggplot(data = local_trend, aes(x = week, y = rate_cases, group = area_name)) +
+  geom_hline(yintercept = 0, size = 1, colour = "#333333") +
+  geom_line(colour = "#39809E", size = 0.6) +
+  annotate(geom = 'line', x = england_cases$week, y = england_cases$rate_cases, colour = "#bdbdbd",  size = 0.6) +
+  scale_x_date(expand = c(0.005, 0.005), date_labels = "%d %b") +
+  scale_y_continuous(expand = c(0.005, 0.005), position = "right") +
+  labs(x = "Specimen date", y = NULL, title = NULL, subtitle = NULL, caption = NULL) +
+  facet_wrap(~area_name, nrow = 2) +
+  theme_minimal() +
+  theme(plot.margin = unit(rep(0.5, 4), "cm"),
+        panel.background = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title.x = element_text(size = 10, hjust = 0, margin = margin(t = 10)),
+        strip.text = element_text(face = "bold", hjust = 0),
+        axis.text.x = element_text(angle = 90, size = 9))
+
+div(class = "caption", p("Source: PHE Coronavirus Dashboard"))
+```
+
+</div>
+</div>
+</div>
+
+<div class="row">
+<div class = "col-sm-6">
+<div class = "div">
+```{r wards}
+ward_cases <- cases %>% 
+  left_join(postcodes, by = c("Patient Postcode" = "postcode")) %>% 
+  group_by(wd19nm, date) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  arrange(wd19nm, date) %>% 
+  complete(wd19nm = wd19nm,
+           date = seq.Date(min(date), max(date), by = "day")) %>% 
+  mutate(n = replace_na(n, 0)) %>% 
+  ungroup() %>% 
+  fill(date) %>% 
+  mutate(period = case_when(
+    date >= max(date)-days(6) & date <= max(date) ~ "current_week",
+    date >= max(date)-days(13) & date <= max(date)-days(7) ~ "previous_week"
+  )) %>% 
+  filter(!is.na(period)) %>% 
+  select(-date) %>%
+  group_by(wd19nm, period) %>% 
+  summarise(n = sum(n)) %>% 
+  pivot_wider(names_from = period, values_from = n) %>% 
+  select(wd19nm, previous_week, current_week) %>% 
+  left_join(ward_population, by = "wd19nm") %>% 
+  mutate(previous_week_rate = round(previous_week/population*100000,1),
+         current_week_rate = round(current_week/population*100000,1),
+         change = current_week-previous_week,
+         change_rate = round(change/population*100000,1)) %>% 
+  ungroup() %>% 
+  select(wd19nm, previous_week_rate, current_week_rate, change_rate)
+
+ward_table <- reactable(
+  ward_cases, 
+  defaultPageSize = 7,
+  paginationType = "simple",
+  resizable = TRUE,
+  defaultSorted = "current_week_rate",
+  defaultSortOrder = "desc",
+  defaultColDef = colDef(align = "left"),
+  defaultColGroup = colGroup(align = "left"), 
+  columns = list(
+    wd19nm = colDef(name = "", align = "left"),
+    previous_week_rate = colDef(header = paste(format(max(cases$date)-days(13),'%d %B'),"-", format(max(cases$date)-days(7),'%d %B')),
+                                        align = "left"),
+    current_week_rate = colDef(header = paste(format(max(cases$date)-days(6),'%d %B'),"-", format(max(cases$date),'%d %B')), 
+                                       align = "left"),
+    change_rate = colDef(name = "Change", align = "left")
+)
+)
+
+div(class = "div",
+    div(class = "subtitle",
+        div(class = "title", "Weekly incidence per 100,000 population by ward"),
+        paste("Trafford, ", format(max(cases$date)-days(13), "%d %B"), "to", format(max(cases$date), "%d %B %Y"))
+        ),
+    br(),
+    ward_table,
+    div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer"))
+    )
+```
+</div>
+</div>
+  
+<div class = "col-sm-6">
+<div class = "div">
+```{r}
+# Match MSOA to postcodes -------------------
+msoa_cases <- cases %>% 
+  filter(date >= max(date)-days(6) & date <= max(date)) %>%
+  left_join(postcodes, by = c("Patient Postcode" = "postcode")) %>% 
+  group_by(msoa11cd) %>%
+  summarise(n = n()) %>% 
+  ungroup() 
+
+# Join cases to msoa boundaries -------------------
+msoa <- left_join(msoa_boundaries, msoa_cases, by = "msoa11cd") %>%
+  mutate(n = replace_na(n, 0),
+         rate = round(n/population*100000,0))
+
+# Set class intervals: natural breaks -------------------
+breaks <- classIntervals(msoa[msoa$rate > 0, ]$rate, n = 5, style = "jenks")$brks
+pal <- colorBin(palette = "Blues", domain = NULL, bins = breaks, na.color = "#FFFFFF")
+
+# Create label text  -------------------
+msoa <- msoa %>% 
+  mutate(popup = str_c("<strong>", msoa11hclnm, "</strong><br/>",
+                       n, " cases<br/>",
+                       rate, " per 100,000") %>% map(HTML))
+
+div(class = "subtitle",
+        div(class = "title", "Incidence per 100,000 population by MSOA"),
+        paste("Trafford,", format(max(cases$date)-days(6), "%d %B"), "to", format(max(cases$date), "%d %B %Y")))
+
+# Layer up map
+bbox <- as.vector(st_bbox(msoa))
+
+leaflet(msoa, height = 350, width = "100%", options = leafletOptions(zoomControl = FALSE, attributionControl = FALSE)) %>% 
+  setMaxBounds(bbox[1], bbox[2], bbox[3], bbox[4]) %>%
+  addTiles(urlTemplate = "", options = tileOptions(minZoom = 11, maxZoom = 11)) %>%
+  addPolygons(fillColor = ~pal(rate), fillOpacity = 0.8, smoothFactor = 0.5, 
+              stroke = TRUE, weight = 1, color = "#212121", opacity = 1, 
+              label = ~popup, 
+              labelOptions = labelOptions(style = list("font-weight" = "normal", padding = "3px 8px"), textsize = "15px", direction = "auto"),
+              highlight = highlightOptions(color = "#212121", weight = 2, bringToFront = TRUE)) %>% 
+  addLegend(pal = pal, values = ~rate, opacity = 0.8, title = "Rate", position = "bottomright", className = "legend") %>% 
+  onRender(
+  "function(el, t) {var myMap = this;myMap._container.style['background'] = '#ffffff';}",
+        paste0("function(el, x) {$('head').append(","\'<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\'",");}"))
+
+div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer"))
+```
+</div>
+</div>
+</div>
+
+<div class = "row">
+<div class = "col-sm-6">
+<div class = "div">
+```{r, dev = 'svg'}
+div(class = "subtitle",
+    div(class = "title", "Incidence per 100,000 population by age and gender"),
+    paste("Trafford,", format(max(cases$date)-days(6), "%d %B"), "to", format(max(cases$date), "%d %B %Y")))
+
+age <- cases %>%   
+  # last 7 days
+  filter(date >= max(date)-days(6), `Patient Gender` != "Unknown") %>% 
+  group_by(`Patient Gender`, `Age (Years)`) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  select(gender = `Patient Gender`, age = `Age (Years)`, n) %>% 
+  mutate(ageband = cut(age,
+                       breaks = c(0,5,10,20,30,40,50,60,70,80,120),
+                       labels = c("0-4","5-9","10-19","20-29","30-39","40-49","50-59","60-69","70-79","80+"),
+                       right = FALSE)) %>% 
+  group_by(gender, ageband) %>% 
+  summarise(n = sum(n)) %>% 
+  ungroup() 
+
+# Age-sex pyramid
+pyramid <- left_join(ageband, age) %>% 
+  mutate(ageband = fct_relevel(factor(ageband), "0-4","5-9","10-19","20-29","30-39","40-49","50-59","60-69","70-79","80+"),
+         n = replace_na(n, 0),
+         rate = n/population*100000)
+
+spacing = 17
+breaks = seq(0, max(pyramid$rate), by = 20)
+
+pyramid_data <- pyramid %>% 
+  mutate(rate = case_when(gender == "Male" ~ as.numeric(rate) * -1, TRUE ~ as.numeric(rate)),
+         start = if_else(gender == "Male", 0, spacing),
+         end = rate + if_else(gender == "Male", 0, spacing),
+         mid = (start + end)/2,
+         wid = abs(end - start)) 
+
+ggplot(data = pyramid_data) +
+  geom_tile(aes(mid, ageband, fill = gender, width = wid), height = 0.8) +
+  geom_text(data = . %>% distinct(ageband), aes(spacing/2, ageband, label = ageband)) +
+  scale_fill_manual(values = c("#d8b365", "#5ab4ac"), labels = c("Female", "Male"), guide = guide_legend(keyheight = unit(2.5, units = "mm"),  keywidth = unit(12, units = "mm"), label.position = "bottom", title.position = 'top', nrow = 1, reverse = TRUE)) +
+  scale_x_continuous(breaks = c(-breaks, spacing + breaks), labels = c(breaks, breaks)) +
+  theme_minimal() +
+  labs(x = NULL, y = NULL, title = NULL, subtitle = NULL, caption = NULL, fill = NULL) +
+  theme(plot.margin = unit(rep(0.5, 4), "cm"),
+        panel.background = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "top", 
+        legend.justification = "left",
+        legend.direction = "horizontal",
+        legend.text = element_text(size = 10),
+        axis.text.y = element_blank(),
+        axis.ticks = element_line(colour = NA))
+
+div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer | ONS"))
+```
+</div>
+</div>
+
+<div class = "col-sm-6">
+<div class = "div">
+```{r, dev = 'svg'}
+# Ethnicity
+div(class = "subtitle",
+    div(class = "title", "Incidence per 100,000 population by ethnicity"),
+    paste("Trafford,", format(max(cases$date)-days(6), "%d %B"), "to", format(max(cases$date), "%d %B %Y")))
+
+ethnic_group <- cases %>% 
+  # last 7 days
+  filter(date >= max(date)-days(6) & date <= max(date)) %>% 
+  mutate(ethnic_group = 
+           case_when(
+             Ethnicity %in% c("British", "Irish", "Any other White background") ~ "White",
+             Ethnicity %in% c("White and Black Caribbean", "White and Black African", "White and Asian", "Any other Mixed / Multiple ethnic background") ~ "Mixed",
+             Ethnicity %in% c("Indian", "Pakistani", "Bangladeshi", "Any other Asian background") ~ "Asian / Asian British",
+             Ethnicity %in% c("Caribbean", "African", "Any other Black / African / Caribbean background") ~ "Black / Black British",
+             Ethnicity %in% c("Chinese", "Any other ethnic group") ~ "Other",
+             TRUE ~ "Not known")) %>% 
+  group_by(ethnic_group) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  filter(ethnic_group != "Not known")
+
+left_join(ethnicity, ethnic_group, by = "ethnic_group") %>% 
+  mutate(rate = n/population*100000,1) %>% 
+  ggplot() +
+  geom_col(aes(x = rate, y = fct_reorder(ethnic_group, rate)), fill = "#CB6598", width = 0.8) +
+  geom_vline(xintercept = 0, size = 1, colour = "#333333") +
+  geom_label(aes(x = rate, y = ethnic_group, label = round(rate, 0)),
+             hjust = 1,  vjust = 0.5, 
+             colour = "#FFFFFF", fill = NA, label.size = NA, 
+             size = 6) +
+  scale_x_continuous(expand = c(0.005, 0.005)) +
+  labs(x = NULL, y = NULL, title = NULL, subtitle = NULL, caption = NULL) +
+  theme_minimal() +
+  theme(plot.margin = unit(rep(0.5, 4), "cm"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 12)) +
+  coord_cartesian(clip = "off")
+
+div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer | 2011 Census"))
+```
+</div>
+</div>
+</div>
+</div>
+<br /><br />
+
+

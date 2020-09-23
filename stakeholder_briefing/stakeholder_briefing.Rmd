@@ -1,0 +1,381 @@
+---
+title: "Weekly External COVID-19 Data Briefing"
+author: "Public Health Team"
+date: "Last updated: `r format(Sys.time(), '%d %B %Y')`"
+output: powerpoint_presentation
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+library(tidyverse) ; library(sf) ; library(lubridate) ; library(scales) ; library(zoo) ; library(treemapify) ; library(classInt) ; library(shadowtext) ; library(RcppRoll) ; library(ggrepel)
+
+# Coronavirus cases -------------------
+raw <- read_csv("../data/data.csv") %>% 
+  mutate(date = as.Date(`Specimen Date`, format = "%Y-%m-%d"))
+
+cases <- raw %>% 
+  # retain cases over last two weeks
+  filter(date >= max(date)-days(13))
+
+# Geospatial data -------------------
+ward_boundaries <- st_read("../data/geospatial/wards.geojson")
+lsoa_boundaries <- st_read("../data/geospatial/lsoa.geojson")
+postcodes <- read_csv("../data/geospatial/postcodes.csv")
+```
+
+## 
+
+`r paste0("These briefing slides cover the 14-day period between ", format(min(cases$date), "%d %B"), " and ", format(max(cases$date), "%d %B %Y"), ".")`
+
+## Summary
+
+- Bullet 1
+- Bullet 2
+- Bullet 3
+
+## Trend
+```{r trend, dpi=300}
+# Calculate the 14-day rolling average
+moving_average <- raw %>% 
+  group_by(date) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  arrange(date) %>% 
+  complete(date = seq.Date(min(date), max(date), by = "day")) %>% 
+  mutate(n = replace_na(n, 0)) %>% 
+  ungroup() %>% 
+  fill(date) %>% 
+  mutate(fourteen_day = round(rollmean(n, 14, align = "right", fill = NA),1))
+
+# Plot line chart
+ggplot() +
+  geom_hline(yintercept = 0, size = 0.3, colour = "#333333") +
+  geom_col(data = moving_average, aes(x = date, y = n), fill = "#39809E", alpha = 0.6) +
+  geom_line(data = moving_average, aes(x = date, y = fourteen_day, colour = "fourteen_day"), size = 1) +
+  scale_colour_manual(values = c("fourteen_day" = "#39809E"), name = NULL, labels = "14-day rolling average") +
+  scale_x_date(labels = date_format("%b"), date_breaks = "1 month") +
+  scale_y_continuous(expand = c(0.005, 0.005), position = "right") +
+  labs(x = "Specimen date", y = NULL, 
+       title = "Daily laboratory confirmed COVID-19 cases", 
+       subtitle = paste("Trafford,", format(min(moving_average$date), "%d %B"), "to", format(max(moving_average$date), "%d %B %Y")), 
+       caption = "Source: Public Health England") +
+  theme_minimal() +
+  theme(plot.margin = unit(rep(0.5, 4), "cm"),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title.position = "plot",
+        plot.title = element_text(size = 14, face = "bold"),
+        plot.subtitle = element_text(size = 12, margin = margin(b = 20)),
+        plot.caption = element_text(colour = "grey60", margin = margin(t = 20, b = -10)),
+        legend.position = "top", 
+        legend.justification = "left",
+        legend.text = element_text(size = 10),
+        axis.title.x = element_text(size = 10, hjust = 0, margin = margin(t = 10)),
+        axis.text.x = element_text(angle = 90))
+```
+
+## Pillars
+```{r pillars, dpi=300}
+# Calculate number of cases by pillar each day
+pillars <- raw %>% 
+  group_by(date, Pillar) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  arrange(date) %>% 
+  complete(date = seq.Date(min(date), max(date), by = "day")) %>% 
+  mutate(n = replace_na(n, 0)) %>% 
+  ungroup() %>% 
+  fill(date)
+
+# Plot column chart
+ggplot() +
+  geom_col(data = pillars, aes(x = date, y = n, fill = Pillar), 
+           colour = NA, width = 0.8, alpha = 1) +
+  geom_hline(yintercept = 0, size = 0.3, colour = "#333333") +
+  scale_fill_manual(values = c("PILLAR 1" = "#7AC3CC", "PILLAR 2" = "#F54C60"), 
+                    name = NULL, 
+                    labels = c("PILLAR 1" = "Pillar 1", "PILLAR 2" = "Pillar 2"),
+                    na.translate = FALSE,
+                    guide = guide_legend(keyheight = unit(1, units = "mm"),
+                                         keywidth = unit(12, units = "mm"),
+                                         label.position = "bottom",
+                                         nrow = 1)) +
+  scale_x_date(labels = date_format("%b"), date_breaks = "1 month") +
+  scale_y_continuous(expand = c(0.005, 0.005), position = "right") +
+  labs(x = "Specimen date", y = NULL, 
+       title = "Confirmed COVID-19 cases by testing pillar", 
+       subtitle = paste("Trafford,", format(min(pillars$date), "%d %B"), "to", format(max(pillars$date), "%d %B %Y")), 
+       caption = "Source: Public Health England") +
+  theme_minimal() +
+  theme(plot.margin = unit(rep(0.5, 4), "cm"),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title.position = "plot",
+        plot.title = element_text(size = 14, face = "bold"),
+        plot.subtitle = element_text(size = 12, margin = margin(b = 20)),
+        plot.caption = element_text(colour = "grey60", margin = margin(t = 20, b = -10)),
+        legend.position = "top", 
+        legend.justification = "left",
+        legend.direction = "horizontal",
+        legend.text = element_text(size = 10),
+        axis.title.x = element_text(size = 10, hjust = 0, margin = margin(t = 10)),
+        axis.text.x = element_text(angle = 90))
+```
+
+## Benchmarking
+```{r benchmarking, dpi=300}
+# Load mid-2019 population estimates
+population <- read_csv("../data/population.csv")
+
+# Load confirmed cases
+# Source: Coronavirus Dashboard, Public Health England
+# URL: https://coronavirus.data.gov.uk
+phe_dashboard_cases <- read_csv("https://coronavirus.data.gov.uk/downloads/csv/coronavirus-cases_latest.csv") %>% 
+  filter(`Area type` == "ltla") %>% 
+  mutate(date = as.Date(`Specimen date`, format = "%Y-%m-%d")) %>% 
+  select(date,
+         area_code = `Area code`,
+         area_name = `Area name`,
+         new_cases = `Daily lab-confirmed cases`) %>% 
+  arrange(date) %>% 
+  group_by(area_code, area_name) %>%
+  complete(date = seq.Date(min(date), max(date), by = "day")) %>% 
+  mutate(new_cases = replace_na(new_cases, 0)) %>% 
+  ungroup() %>% 
+  fill(area_name) %>%
+  left_join(population, by = "area_code") %>% 
+  mutate(rate = round(new_cases/population*100000,1)) %>%  
+  group_by(area_name) %>% 
+  mutate(previous_week = roll_sum(lag(rate, 7), 7, fill = NA, align = "right"),
+         current_week = roll_sum(rate, 7, fill = NA, align = "right"),
+         change = current_week/previous_week) %>% 
+  ungroup() %>% 
+  filter(date == max(date)-days(3))
+
+# Layer scatter plot
+ggplot() +
+  geom_hline(yintercept = 1, size = 0.5, colour = "#333333") +
+  geom_point(data = filter(phe_dashboard_cases, !area_name %in% c("Bolton", "Bury", "Manchester", "Oldham", "Rochdale", "Trafford", "Salford", "Stockport", "Tameside", "Wigan")), 
+             aes(x = rate, y = change, size = population), shape = 21, fill = "#bdbdbd", colour = "#757575", alpha = 0.5) +
+  geom_point(data = filter(phe_dashboard_cases, area_name == "Trafford"), 
+             aes(rate, y = change, size = population), shape = 21, fill = "#00AFBB", colour = "#000000") +
+  # other GM local authorities
+  geom_point(data = filter(phe_dashboard_cases, area_name %in% c("Bolton", "Bury", "Manchester", "Oldham", "Rochdale",  "Salford", "Stockport", "Tameside", "Wigan")), 
+             aes(rate, y = change, size = population), shape = 21, fill = "#E7B800", colour = "#000000") +
+  geom_text_repel(data = filter(phe_dashboard_cases, area_name %in% c("Bolton", "Bury", "Manchester", "Oldham", "Rochdale",  "Salford", "Stockport", "Trafford", "Tameside", "Wigan")),
+                  aes(rate, y = change, label = area_name), size = 3, point.padding = 0.5) +
+  annotate("text", x = max(phe_dashboard_cases$rate)*0.1, y = 5, label = "Low and rising", size = 4, hjust = 0, colour = "#757575") +
+  annotate("text", x = max(phe_dashboard_cases$rate)*0.1, y = 0.4, label = "Low and falling", size = 4, hjust = 0, colour = "#757575") +
+  annotate("text", x = max(phe_dashboard_cases$rate)*0.6, y = 5, label = "High and rising", size = 4, hjust = 0, colour = "#757575") +
+  annotate("text", x = max(phe_dashboard_cases$rate)*0.6, y = 0.4, label = "High and falling", size = 4, hjust = 0, colour = "#757575") +
+  scale_x_continuous(expand = c(0.005, 0.005),
+                     breaks = seq(0, max(phe_dashboard_cases$rate), 2),
+                     labels = seq(0, max(phe_dashboard_cases$rate), 2),
+                     limits = c(0, max(phe_dashboard_cases$rate))) +
+  scale_y_log10(expand = c(0.005, 0.005),
+                breaks = c(0.25, 0.5, 1, 2, 4, 8),
+                labels = paste(c(0.25, 0.5, 1, 2, 4, 8), "x"),
+                limits = c(0.2, 10),
+                position = "right") +
+  labs(x = "New cases per 100k people", y = "Week-on-week\nchange in cases",
+       title = "Local prevalence and growth rate in cases", 
+       subtitle = paste("Local authorities in England, as of", format(max(phe_dashboard_cases$date), '%d %B %Y')), 
+       caption = "Source: Public Health England | Credits: @jburnmurdoch") +
+  theme_minimal() +
+  theme(plot.margin = unit(rep(0.5, 4), "cm"),
+        panel.grid.major = element_line(colour = "#bdbdbd"),
+        panel.grid.minor = element_blank(),
+        plot.title.position = "plot",
+        plot.title = element_text(size = 14, face = "bold"),
+        plot.subtitle = element_text(size = 12, margin = margin(b = 20)),
+        plot.caption = element_text(colour = "grey60", margin = margin(t = 20, b = -10)),
+        axis.title.x = element_text(size = 8, hjust = 0, margin = margin(t = 10)),
+        axis.title.y = element_text(size = 8, vjust = 0, margin = margin(t = 10)),
+        axis.text = element_text(face = "bold"),
+        legend.position = "none") +
+  coord_cartesian(clip = "off")
+```
+
+## Triggers
+```{r, triggers}
+current_week <- cases %>% 
+  filter(date >= max(date)-days(6)) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  mutate(rate = round(n/237354*100000,1))
+
+previous_week <- cases %>% 
+  filter(date >= max(date)-days(13), date < max(date)-days(6)) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  mutate(rate = round(n/237354*100000,1))
+  
+tibble(Trigger = c("Number of cases", "Rate per 100,000", "Positivity rate", "Test rate per 100,000"), 
+              `Previous week` = list(previous_week$n, previous_week$rate, NA, NA), 
+              `Current week` = list(current_week$n, current_week$rate, NA, NA)) %>% 
+  knitr::kable()
+```
+
+## Ethnicity
+```{r ethnicity, dpi=300}
+# Recode ethnic groups and sum cases
+ethnicity <- cases %>% 
+  mutate(ethnic_group = case_when(
+    Ethnicity %in% c("British", "Irish", "Any other White background") ~ "White",
+    Ethnicity %in% c("White and Black Caribbean", "White and Black African", "White and Asian", "Any other Mixed / Multiple ethnic background") ~ "Mixed",
+    Ethnicity %in% c("Indian", "Pakistani", "Bangladeshi", "Any other Asian background") ~ "Asian / Asian British",
+    Ethnicity %in% c("Caribbean", "African", "Any other Black / African / Caribbean background") ~ "Black / Black British",
+    Ethnicity %in% c("Chinese", "Any other ethnic group") ~ "Other",
+    TRUE ~ "Not known")) %>% 
+  group_by(ethnic_group) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  mutate(prop = n/sum(n),
+         info = str_c(ethnic_group, " (",  percent(prop, accuracy = 1), ")"))
+
+# Plot as treemap
+ggplot(ethnicity, aes(area = prop, fill = fct_reorder(ethnic_group, prop, .desc = TRUE), subgroup = ethnic_group, label = info)) +
+  geom_treemap(colour = "#212121") +
+  geom_treemap_text(colour = "#FFFFFF", place = "bottomleft", reflow = TRUE, size = 8,
+                    padding.x = grid::unit(1.5, "mm"),
+                    padding.y = grid::unit(2, "mm")) +
+  scale_fill_brewer(palette = "Blues", direction = -1) +
+  labs(x = NULL, y = NULL, 
+       title = "COVID-19 cases by ethnic group\n",
+       subtitle = paste("Trafford,", format(min(cases$date), "%d %B"), "to", format(max(cases$date), "%d %B %Y")), 
+       caption = "Source: Public Health England") +
+  theme_void() +
+  theme(plot.margin = unit(rep(0.5, 4), "cm"),
+        plot.title.position = "plot",
+        plot.title = element_text(size = 14, lineheight = 0.3, face = "bold"),
+        plot.subtitle = element_text(size = 12, margin = margin(b = 10)),
+        plot.caption = element_text(colour = "grey60", margin = margin(t = 20, b = -10)),
+        legend.position = "none",
+        axis.title.x = element_text(size = 10, hjust = 0, margin = margin(t = 10)),
+        axis.text.x = element_text(angle = 90),
+        axis.text.y = element_text(face = "bold"))
+```
+
+## Age and gender
+```{r age, dpi=300}
+age <- cases %>%   
+  filter(`Patient Gender` != "Unknown") %>% 
+  group_by(`Patient Gender`, `Age (Years)`) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  select(gender = `Patient Gender`, age = `Age (Years)`, n) %>% 
+  mutate(ageband = cut(age,
+                       breaks = c(0,5,10,20,30,40,50,60,70,80,120),
+                       labels = c("0-4","5-9","10-19","20-29","30-39","40-49","50-59","60-69","70-79","80+"),
+                       right = FALSE)) %>% 
+  group_by(gender, ageband) %>% 
+  summarise(n = sum(n)) %>% 
+  ungroup() 
+
+# Age-sex pyramid
+spacing = 6
+breaks = seq(0, max(age$n), by = 2)
+
+pyramid <- tibble(
+  ageband = c(rep(c("0-4","5-9","10-19","20-29","30-39","40-49","50-59","60-69","70-79","80+"),2)),
+  gender = c(rep("Male", 10), rep("Female", 10)))
+
+pyramid_data <- left_join(pyramid, age) %>% 
+  mutate(ageband = fct_relevel(factor(ageband), "0-4","5-9","10-19","20-29","30-39","40-49","50-59","60-69","70-79","80+"),
+         n = replace_na(n, 0),
+         n = case_when(gender == "Male" ~ as.numeric(n) * -1, TRUE ~ as.numeric(n)),
+         start = if_else(gender == "Male", 0, spacing),
+         end = n + if_else(gender == "Male", 0, spacing),
+         mid = (start + end)/2,
+         wid = abs(end - start)) 
+
+ggplot(data = pyramid_data) +
+  geom_tile(aes(mid, ageband, fill = gender, width = wid), height = 0.8) +
+  geom_text(data = . %>% distinct(ageband), aes(spacing/2, ageband, label = ageband)) +
+  scale_fill_manual(values = c("#d8b365", "#5ab4ac"), labels = c("Female", "Male"), guide = guide_legend(keyheight = unit(2.5, units = "mm"),  keywidth = unit(12, units = "mm"), label.position = "bottom", title.position = 'top', nrow = 1, reverse = TRUE)) +
+  scale_x_continuous(breaks = c(-breaks, spacing + breaks), labels = c(breaks, breaks)) +
+  theme_minimal() +
+    labs(x = NULL, y = NULL, 
+       title = "Age-sex profile of positive cases",
+       subtitle = paste("Trafford,", format(min(cases$date), "%d %B"), "to", format(max(cases$date), "%d %B %Y")), 
+       caption = "Source: Public Health England",
+       fill = NULL) +
+  theme(plot.margin = unit(rep(0.5, 4), "cm"),
+        panel.spacing = unit(-0.5, "lines"),
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.ticks = element_line(colour = NA),
+        plot.title.position = "plot",
+        plot.title = element_text(size = 14, face = "bold"),
+        plot.subtitle = element_text(size = 12, margin = margin(b = 20)),
+        plot.caption = element_text(colour = "grey60", margin = margin(t = 20, b = -10)),
+        axis.text.y = element_blank(),
+        legend.position = "top", 
+        legend.justification = "left",
+        legend.direction = "horizontal",
+        legend.text = element_text(size = 10))
+```
+
+## Geography
+```{r geography, dpi=300}
+# Match LSOA to postcodes -------------------
+lsoa_cases <- cases %>% 
+  left_join(postcodes, by = c("Patient Postcode" = "postcode")) %>% 
+  group_by(lsoa11cd) %>%
+  summarise(n = n()) %>% 
+  ungroup() 
+
+# Join cases to LSOA boundaries -------------------
+lsoa <- left_join(lsoa_boundaries, lsoa_cases, by = "lsoa11cd") %>%
+  mutate(n = replace_na(n, 0),
+         rate = round(n/population*100000,0))
+
+# Set class intervals: natural breaks -------------------
+classes <- classIntervals(lsoa[lsoa$rate > 0, ]$rate, n = 5, style = "jenks")
+
+# Assign class breaks to spatial data and format labels -------------------
+lsoa <- mutate(lsoa, rate_class = factor(cut(rate, classes$brks, include.lowest = T), labels = c(
+  paste(classes$brks[1], "-", classes$brks[2]),
+  paste(classes$brks[2], "-", classes$brks[3]),
+  paste(classes$brks[3], "-", classes$brks[4]),
+  paste(classes$brks[4], "-", classes$brks[5]),
+  paste(classes$brks[5], "-", classes$brks[6])
+)))
+
+# Plot choropleth map -------------------
+ggplot(data = lsoa) +
+  geom_sf(aes(fill = factor(rate_class)), alpha = 0.8, colour = "#bdbdbd", size = 0.2) +
+  geom_sf(data = ward_boundaries, fill = NA, alpha = 1, colour = "#212121",  size = 0.4) +
+  geom_shadowtext(data = ward_boundaries, aes(x = lon, y = lat, label = wd19nm), colour = "#000000", size = 1.5, bg.colour = "#FFFFFF") +
+  scale_fill_brewer(palette = "Blues", name = "Rate", na.translate = FALSE, guide = guide_legend(
+    keyheight = unit(3, units = "mm"),
+    keywidth = unit(3, units = "mm"))) +
+  labs(x = NULL, y = NULL,
+       title = "Confirmed cases per 100,000 people by LSOA",
+       subtitle = paste("Trafford,", format(min(cases$date), "%d %B"), "to", format(max(cases$date), "%d %B %Y")), 
+       caption = "Source: Public Health England\nContains OS data © Crown copyright and database right (2020)") +
+  theme_void() +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0),
+        plot.subtitle = element_text(size = 12, hjust = 0),
+        plot.caption = element_text(size = 9, color = "grey50", hjust = 1, margin = margin(t = 15)),
+        legend.position = "right",
+        legend.title = element_text(size = 7),
+        legend.text = element_text(size = 6))
+```
+
+## Trafford's 10-point plan ()
+
+- Bullet 1
+- Bullet 2
+- Bullet 3
+
+## Further resources
+
+- [COVID-19 page](https://www.trafforddatalab.io/covid19) on [Trafford Data Lab's](https://www.trafforddatalab.io) website
+- [COVID-19 Resources](https://www.mhcctableau.nhs.uk/page/covid-19-resources) developed by [Manchester Health & Care Commissioning](https://www.mhcc.nhs.uk)
+- Public Health England's [Coronavirus dashboard](https://coronavirus.data.gov.uk)
+- [Our World in Data's](https://ourworldindata.org/coronavirus) coronavirus pages
+
+
