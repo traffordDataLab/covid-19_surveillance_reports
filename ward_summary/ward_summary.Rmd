@@ -1,0 +1,464 @@
+---
+pagetitle: "COVID-19 surveillance summary"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+library(tidyverse) ; library(lubridate) ; library(scales) ; library(shiny) ; library(reactable)
+
+id <- "Clifford"
+# account for 4-day reporting lag
+current_period <- as.Date(c("2020-08-28", "2020-09-03"))
+previous_period <- as.Date(c("2020-08-21", "2020-08-27"))
+
+# Postcodes
+# Source: ONS Open Geography Portal
+postcodes <- read_csv("../data/geospatial/postcodes.csv") %>% 
+  select(postcode, wd19cd, wd19nm)
+
+# Confirmed cases: official sensitive data
+# Source: PHE Covid-19 Situational Awareness Explorer
+raw <- read_csv("../data/data.csv") %>% 
+  mutate(date = as.Date(`Specimen Date`, format = "%Y-%m-%d")) %>% 
+  left_join(postcodes, by = c("Patient Postcode" = "postcode")) 
+
+cases <- filter(raw, wd19nm == id, date <= current_period[2])
+
+# Mid-2018 population estimates for Trafford's wards
+# Source: Nomis / ONS
+# URL: https://www.nomisweb.co.uk/datasets/pestsyoaoa
+population <- read_csv("http://www.nomisweb.co.uk/api/v01/dataset/NM_2010_1.data.csv?geography=1660945005...1660945019,1660945021,1660945020,1660945022...1660945025&date=latest&gender=0&c_age=200&measures=20100&select=date_name,geography_name,geography_code,gender_name,c_age_name,measures_name,obs_value,obs_status_name") %>% 
+  select(wd19nm = GEOGRAPHY_NAME, n = OBS_VALUE)
+```
+
+```{css}
+@import url('https://fonts.googleapis.com/css2?family=Lato&display=swap');
+.div {
+  font-family: 'Lato', sans-serif;
+}
+.title {
+  font-size: 16px;
+  font-weight: bold;
+}
+.subtitle {
+  margin: 8px 0;
+  font-size: 14px;
+}
+.caption {
+  text-align: right;
+  font-size: 12px;
+  color: #212121;
+}
+```
+
+# COVID-19 surveillance summary for `r id`
+
+*This summary of COVID-19 surveillance data for `r id` ward focusses on the 14 days between `r format(previous_period[1], '%d %B')` and `r format(current_period[2], '%A %d %B %Y')`.*
+
+**Disclaimer**: The charts and tables in this summary are derived from data shared by Public Health England with local authorities for the purposes of monitoring the COVID-19 outbreak. Ward level data are not officially published and could contain personally identifiable information so <u>please do not share</u> this summary with third parties.
+```{r, summary}
+# Weekly cases
+current_week <- cases %>% 
+  group_by(date) %>% 
+  summarise(n = n()) %>% 
+  filter(date >= current_period[1])
+
+previous_week <- cases %>% 
+  group_by(date) %>% 
+  summarise(n = n()) %>% 
+  filter(date >= previous_period[1], date <= previous_period[2])
+
+# Median age
+median_age <- cases %>% 
+  group_by(Pillar) %>% 
+  summarise(median_age = as.integer(median(`Age (Years)`)))
+```
+
+---
+
+- **`r nrow(cases)`** cases have been confirmed in `r id` since the first case was reported on `r format(min(cases$date), '%A %d %B')` which is equivalent to **`r comma(nrow(cases)/population[population$wd19nm == id, ]$n*100000, accuracy = 1)`** cases per 100,000 residents.
+- There were **`r sum(current_week$n)`** confirmed cases in `r id` during the week ending `r format(current_period[2], '%A %d %B')` which is equivalent to **`r round(sum(current_week$n)/population[population$wd19nm == id, ]$n*100000,1)`** cases per 100,000 residents. **`r sum(previous_week$n)`** cases or **`r round(sum(previous_week$n)/population[population$wd19nm == id, ]$n*100000,1)`** cases per 100,000 residents were confirmed during the previous week ending `r format(previous_period[2], '%A %d %B')`.
+- The median age of residents who tested positive under Pillar 1 since the beginning of the coronavirus outbreak is **`r pull(filter(median_age, Pillar == "PILLAR 1"),median_age)`** years and **`r pull(filter(median_age, Pillar == "PILLAR 2"),median_age)`** years under Pillar 2.
+
+---
+
+<div class="container-fluid">
+
+### Weekly cases
+<div class = "row">
+<div class = "col-sm-6">
+<div class = "div">
+```{r, epidemic curve, dev = 'svg'}
+weekly_cases <- cases %>% 
+  mutate(week = floor_date(date, "1 week", week_start = 5)) %>% 
+  group_by(week) %>% 
+  summarise(n = n()) %>% 
+  ungroup()
+
+div(class = "subtitle",
+    div(class = "title", "Epidemic curve of confirmed cases"),
+    paste0(id, ", ", format(min(weekly_cases$week), "%d %B"), " to ", format(current_period[2], "%d %B %Y")))
+
+ggplot() +
+  geom_hline(yintercept = 0, size = 0.3, colour = "#333333") +
+  geom_col(data = weekly_cases, aes(x = week, y = n), fill = "#39809E", alpha = 0.6) +
+  scale_x_date(expand = c(0.005, 0.005), date_labels = "%b") +
+  scale_y_continuous(expand = c(0.005, 0.005), breaks = function(x) unique(
+    floor(pretty(seq(0, (max(x) + 1) * 1.1)))), position = "right") +
+  labs(x = "Specimen date", y = NULL, title = NULL, subtitle = NULL, caption = NULL) +
+  theme_minimal() +
+  theme(plot.margin = unit(rep(0.5, 4), "cm"),
+        panel.background = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title.x = element_text(size = 10, hjust = 0, margin = margin(t = 10)))
+
+div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer"))
+```
+</div>
+</div>
+
+<div class = "col-sm-6">
+<div class = "div">
+```{r, pillars}
+pillars <- cases %>% 
+  mutate(week = floor_date(date, "1 week", week_start = 5)) %>% 
+  group_by(week, Pillar) %>% 
+  summarise(n = n()) %>% 
+  ungroup()
+
+div(class = "subtitle",
+    div(class = "title", "Confirmed cases by testing pillar"),
+    paste0(id, ", ", format(min(pillars$week), "%d %B"), " to ", format(current_period[2], "%d %B %Y")))
+
+ggplot() +
+  geom_hline(yintercept = 0, size = 0.3, colour = "#333333") +
+  geom_col(data = pillars, aes(x = week, y = n, fill = Pillar), alpha = 1, position = position_stack(reverse = T)) +
+  scale_fill_manual(values = c("PILLAR 1" = "#0A91A2", "PILLAR 2" = "#74C9B9"), 
+                    name = NULL, 
+                    labels = c("PILLAR 1" = "Pillar 1", "PILLAR 2" = "Pillar 2"),
+                    na.translate = FALSE,
+                    guide = guide_legend(keyheight = unit(1, units = "mm"),
+                                         keywidth = unit(12, units = "mm"),
+                                         label.position = "bottom",
+                                         nrow = 1)) +
+  scale_x_date(expand = c(0.005, 0.005), date_labels = "%b") +
+  scale_y_continuous(expand = c(0.005, 0.005), breaks = function(x) unique(
+    floor(pretty(seq(0, (max(x) + 1) * 1.1)))), position = "right") +
+  labs(x = "Specimen date", y = NULL, title = NULL, subtitle = NULL, caption = NULL) +
+  theme_minimal() +
+  theme(plot.margin = unit(rep(0.5, 4), "cm"),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title.position = "plot",
+        plot.title = element_text(size = 14, face = "bold"),
+        plot.subtitle = element_text(size = 12, margin = margin(b = 20)),
+        plot.caption = element_text(colour = "grey60", margin = margin(t = 20, b = -10)),
+        legend.position = "top", 
+        legend.justification = "right",
+        legend.direction = "horizontal",
+        legend.text = element_text(size = 10),
+        axis.title.x = element_text(size = 10, hjust = 0, margin = margin(t = 10)))
+
+div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer"))
+```
+</div>
+</div>
+</div>
+
+### Ward comparison
+<div class = "row">
+<div class = "col-sm-12">
+<div class = "div">
+```{r, benchmarking}
+ward_cases <- raw %>% 
+  group_by(wd19nm, date) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  arrange(wd19nm, date) %>% 
+  complete(wd19nm = wd19nm,
+           date = seq.Date(min(date), max(date), by = "day")) %>% 
+  mutate(n = replace_na(n, 0)) %>% 
+  ungroup() %>% 
+  fill(date) %>% 
+  mutate(period = case_when(
+    date >= current_period[1] & date <= current_period[2] ~ "current_week",
+    date >= previous_period[1] & date <= previous_period[2] ~ "previous_week"
+  )) %>% 
+  filter(!is.na(period)) %>% 
+  select(-date) %>%
+  group_by(wd19nm, period) %>% 
+  summarise(n = sum(n)) %>% 
+  pivot_wider(names_from = period, values_from = n) %>% 
+  select(wd19nm, previous_week, current_week) %>% 
+  left_join(population, by = "wd19nm") %>% 
+  mutate(previous_week_rate = round(previous_week/n*100000,1),
+         current_week_rate = round(current_week/n*100000,1),
+         change = current_week-previous_week,
+         change_rate = round(change/n*100000,1)) %>% 
+  ungroup() %>% 
+  select(wd19nm, previous_week, current_week, change, previous_week_rate, current_week_rate, change_rate)
+
+ward_table <- reactable(
+  ward_cases, 
+  defaultPageSize = 7,
+  paginationType = "simple",
+  resizable = TRUE,
+  defaultSorted = "current_week_rate",
+  defaultSortOrder = "desc",
+  defaultColDef = colDef(align = "left"),
+  defaultColGroup = colGroup(align = "left"), 
+  rowStyle = function(index) {
+    if (ward_cases[index, "wd19nm"] == id) {
+      list(background = "rgba(0, 0, 0, 0.05)")
+    }
+  },
+  columns = list(
+    wd19nm = colDef(name = "", align = "left"),
+    previous_week = colDef(header = paste(format(previous_period[1],'%d %B'),"-", format(previous_period[2],'%d %B')),
+                                align = "left"),
+    current_week = colDef(header = paste(format(current_period[1],'%d %B'),"-", format(current_period[2],'%d %B')), 
+                               align = "left"),
+    change = colDef(name = "Change", align = "left"),
+    previous_week_rate = colDef(header = paste(format(previous_period[1],'%d %B'),"-", format(previous_period[2],'%d %B')),
+                                align = "left"),
+    current_week_rate = colDef(header = paste(format(current_period[1],'%d %B'),"-", format(current_period[2],'%d %B')), 
+                               align = "left"),
+    change_rate = colDef(name = "Change", align = "left")
+  ),
+  columnGroups = list(
+    colGroup(name = "Cases", columns = c("previous_week", "current_week", "change")),
+    colGroup(name = "Per 100,00", columns = c("previous_week_rate", "current_week_rate", "change_rate"))
+  )
+)
+
+div(class = "div",
+    div(class = "subtitle",
+        div(class = "title", "Weekly confirmed cases per 100,000 residents by ward"),
+        paste("Trafford, ", format(previous_period[1], "%d %B"), "to", format(current_period[2], "%d %B %Y"))
+        ),
+    br(),
+    ward_table,
+    div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer"))
+    )
+```
+
+</div>
+</div>
+</div>
+
+### Age
+<div class = "row">
+<div class = "col-sm-6">
+<div class = "div">
+```{r, ageband cumulative, dev = 'svg'}
+div(class = "subtitle",
+    div(class = "title", "Confirmed cases by age group"),
+    paste0(id, ", ", format(min(cases$date), "%d %B"), " to ", format(current_period[2], "%d %B %Y")))
+
+age <- tibble(
+  ageband = c("0-4","5-9","10-19","20-29","30-39","40-49","50-59","60-69","70-79","80+")) %>% 
+  left_join(
+    cases %>%   
+      group_by(`Age (Years)`) %>% 
+      summarise(n = n()) %>% 
+      ungroup() %>% 
+      select(age = `Age (Years)`, n) %>% 
+      mutate(ageband = cut(age,
+                       breaks = c(0,5,10,20,30,40,50,60,70,80,120),
+                       labels = c("0-4","5-9","10-19","20-29","30-39","40-49","50-59","60-69","70-79","80+"),
+                       right = FALSE)) %>% 
+      group_by(ageband) %>% 
+      summarise(n = sum(n)) %>% 
+      ungroup()
+    ) %>% 
+  mutate(ageband = fct_relevel(factor(ageband), "0-4","5-9","10-19","20-29","30-39","40-49","50-59","60-69","70-79","80+"),
+         n = replace_na(n, 0))
+
+ggplot(data = age) +
+  geom_col(aes(x = n, y = ageband), fill = "#F47C54", width = 0.8) +
+  geom_vline(xintercept = 0, size = 1, colour = "#333333") +
+  geom_label(aes(x = n, y = ageband, label = comma(n, accuracy = 1)),
+             hjust = 0,  vjust = 0.5, 
+             colour = "#212121", fill = NA, label.size = NA, size = 4) +
+  scale_x_continuous(expand = c(0.005, 0.005), limits = c(0, max(age$n)*1.05)) +
+  labs(x = NULL, y = NULL, title = NULL, subtitle = NULL, caption = NULL) +
+  theme_minimal() +
+  theme(plot.margin = unit(rep(0.5, 4), "cm"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 12)) +
+  coord_cartesian(clip = "off")
+
+div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer"))
+```
+</div>
+</div>
+
+<div class = "col-sm-6">
+<div class = "div">
+```{r, ageband fortnight, dev = 'svg'}
+div(class = "subtitle",
+    div(class = "title", "Confirmed cases by age group"),
+    paste0(id, ", 14 days ending ", format(current_period[2], "%d %B %Y")))
+ 
+age <- tibble(
+  ageband = c("0-4","5-9","10-19","20-29","30-39","40-49","50-59","60-69","70-79","80+")) %>% 
+  left_join(
+    cases %>%   
+      filter(date >= previous_period[1]) %>% 
+      group_by(`Age (Years)`) %>% 
+      summarise(n = n()) %>% 
+      ungroup() %>% 
+      select(age = `Age (Years)`, n) %>% 
+      mutate(ageband = cut(age,
+                       breaks = c(0,5,10,20,30,40,50,60,70,80,120),
+                       labels = c("0-4","5-9","10-19","20-29","30-39","40-49","50-59","60-69","70-79","80+"),
+                       right = FALSE)) %>% 
+      group_by(ageband) %>% 
+      summarise(n = sum(n)) %>% 
+      ungroup()
+    ) %>% 
+  mutate(ageband = fct_relevel(factor(ageband), "0-4","5-9","10-19","20-29","30-39","40-49","50-59","60-69","70-79","80+"),
+         n = replace_na(n, 0))
+
+ggplot(data = age) +
+  geom_col(aes(x = n, y = ageband), fill = "#F47C54", width = 0.8) +
+  geom_vline(xintercept = 0, size = 1, colour = "#333333") +
+  geom_label(aes(x = n, y = ageband, label = comma(n, accuracy = 1)),
+             hjust = 0,  vjust = 0.5, 
+             colour = "#212121", fill = NA, label.size = NA, size = 4) +
+  scale_x_continuous(expand = c(0.005, 0.005), limits = c(0, max(age$n)*1.05)) +
+  labs(x = NULL, y = NULL, title = NULL, subtitle = NULL, caption = NULL) +
+  theme_minimal() +
+  theme(plot.margin = unit(rep(0.5, 4), "cm"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 12)) +
+  coord_cartesian(clip = "off")
+
+div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer"))
+```
+</div>
+</div>
+</div>
+
+### Ethnicity
+<div class = "row">
+<div class = "col-sm-6">
+<div class = "div">
+```{r, ethnicity cumulative, dev = 'svg'}
+div(class = "subtitle",
+    div(class = "title", "Confirmed cases by ethnicity"), paste0(id, ", ", format(min(cases$date), "%d %B"), " to ", format(current_period[2], "%d %B %Y")))
+
+ethnicity <- tibble(
+  ethnic_group = c("Asian / Asian British", "Black / Black British", "Mixed", "Other", "White", "Not known")) %>% 
+  left_join(
+    cases %>% 
+      mutate(ethnic_group = 
+               case_when(
+                 Ethnicity %in% c("British", "Irish", "Any other White background") ~ "White",
+                 Ethnicity %in% c("White and Black Caribbean", "White and Black African", "White and Asian", "Any other Mixed / Multiple ethnic background") ~ "Mixed",
+                 Ethnicity %in% c("Indian", "Pakistani", "Bangladeshi", "Any other Asian background") ~ "Asian / Asian British",
+                 Ethnicity %in% c("Caribbean", "African", "Any other Black / African / Caribbean background") ~ "Black / Black British",
+                 Ethnicity %in% c("Chinese", "Any other ethnic group") ~ "Other",
+                 TRUE ~ "Not known")) %>% 
+      group_by(ethnic_group) %>% 
+      summarise(n = n()) %>% 
+      ungroup()
+    ) %>% 
+  mutate(n = replace_na(n, 0))
+
+ggplot(data = ethnicity) +
+  geom_col(aes(x = n, y = fct_reorder(ethnic_group, n)), fill = "#F9A953", width = 0.8) +
+  geom_vline(xintercept = 0, size = 1, colour = "#333333") +
+  geom_label(aes(x = n, y = ethnic_group, label = comma(n, accuracy = 1)),
+             hjust = 0,  vjust = 0.5, 
+             colour = "#212121", fill = NA, label.size = NA, size = 4) +
+  scale_x_continuous(expand = c(0.005, 0.005), limits = c(0, max(ethnicity$n)*1.1)) +
+  labs(x = NULL, y = NULL, title = NULL, subtitle = NULL, caption = NULL) +
+  theme_minimal() +
+  theme(plot.margin = unit(rep(0.5, 4), "cm"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 12)) +
+  coord_cartesian(clip = "off")
+
+div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer"))
+```
+</div>
+</div>
+
+<div class = "col-sm-6">
+<div class = "div">
+```{r, ethnicity fortnight, dev = 'svg'}
+div(class = "subtitle",
+    div(class = "title", "Confirmed cases by ethnicity"), paste0(id, ", 14 days ending ", format(current_period[2], "%d %B %Y")))
+
+ethnicity <- tibble(
+  ethnic_group = c("Asian / Asian British", "Black / Black British", "Mixed", "Other", "White", "Not known")) %>% 
+  left_join(
+    cases %>% 
+      filter(date >= previous_period[1]) %>% 
+      mutate(ethnic_group = 
+               case_when(
+                 Ethnicity %in% c("British", "Irish", "Any other White background") ~ "White",
+                 Ethnicity %in% c("White and Black Caribbean", "White and Black African", "White and Asian", "Any other Mixed / Multiple ethnic background") ~ "Mixed",
+                 Ethnicity %in% c("Indian", "Pakistani", "Bangladeshi", "Any other Asian background") ~ "Asian / Asian British",
+                 Ethnicity %in% c("Caribbean", "African", "Any other Black / African / Caribbean background") ~ "Black / Black British",
+                 Ethnicity %in% c("Chinese", "Any other ethnic group") ~ "Other",
+                 TRUE ~ "Not known")) %>% 
+      group_by(ethnic_group) %>% 
+      summarise(n = n()) %>% 
+      ungroup()
+  ) %>% 
+  mutate(n = replace_na(n, 0))
+
+ggplot(data = ethnicity) +
+  geom_col(aes(x = n, y = fct_reorder(ethnic_group, n)), fill = "#F9A953", width = 0.8) +
+  geom_vline(xintercept = 0, size = 1, colour = "#333333") +
+  geom_label(aes(x = n, y = ethnic_group, label = comma(n, accuracy = 1)),
+             hjust = 0,  vjust = 0.5, 
+             colour = "#212121", fill = NA, label.size = NA, size = 4) +
+  scale_x_continuous(expand = c(0.005, 0.005), limits = c(0, max(ethnicity$n)*1.1)) +
+  labs(x = NULL, y = NULL, title = NULL, subtitle = NULL, caption = NULL) +
+  theme_minimal() +
+  theme(plot.margin = unit(rep(0.5, 4), "cm"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 12)) +
+  coord_cartesian(clip = "off")
+
+div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer"))
+```
+</div>
+</div>
+</div>
+</div>
+<br />
+
+---
+
+**Glossary of terms**
+
+- **Specimen date**: the date when the sample was taken from the person being tested
+- **Epidemic curve**: chart showing the change in the number of cases over time
+- **Pillars 1 and 2**: cases reported include those tested in hospital (pillar 1) and in the community (pillar 2)
+- **Incidence**: the number of cases per 100,000 residents
+
+**Further resources**
+
+- [COVID-19 page](https://www.trafforddatalab.io/covid19) on the [Trafford Data Lab's](https://www.trafforddatalab.io) website
+- [COVID-19 Resources](https://www.mhcctableau.nhs.uk/page/covid-19-resources) developed by [Manchester Health & Care Commissioning](https://www.mhcc.nhs.uk)
+- Public Health England's [Coronavirus dashboard](https://coronavirus.data.gov.uk)
+- [Our World in Data's](https://ourworldindata.org/coronavirus) coronavirus pages
+
+---
+
+<br /><br />
