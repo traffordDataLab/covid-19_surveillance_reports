@@ -6,11 +6,11 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 
-library(tidyverse) ; library(sf) ; library(lubridate) ; library(zoo) ; library(reactable) ; library(classInt) ; library(leaflet) ; library(htmltools) ; library(htmlwidgets)
+library(tidyverse) ; library(sf) ; library(lubridate) ; library(zoo) ; library(reactable) ; library(classInt) ; library(leaflet) ; library(htmltools) ; library(htmlwidgets) ; library(shadowtext)
 
 # UPDATE POSITIVITY RATE!! #
 # Source: PHE Daily COVID-19 Surveillance Reports
-fortnight_ending <- as.Date("2020-09-16")
+fortnight_ending <- as.Date("2020-09-30")
 positivity <- tribble(
   ~pillar, ~cases, ~tests,
   "Pillar 1", NA, NA,
@@ -76,6 +76,21 @@ postcodes <- read_csv("../data/geospatial/postcodes.csv")
 # Middle-layer Super Output Areas in Trafford
 # Source: ONS Open Geography Portal
 msoa_boundaries <- st_read("../data/geospatial/msoa.geojson")
+
+# Trafford's electoral wards
+ward_boundaries <- st_read("../data/geospatial/wards.geojson")
+
+# Town centres in Trafford
+town_centres <- tribble(
+  ~name, ~lat, ~lon,
+  "Sale", 53.4243665, -2.3182869,
+  "Stretford", 53.4452286, -2.3222351,
+  "Urmston", 53.4452286, -2.3524475,
+  "Altrincham", 53.3838403, -2.3527908,
+  "Partington", 53.4212977, -2.4281502,
+  "Carrington", 53.433553, -2.384744,
+  "Old Trafford", 53.461922, -2.270467,
+  "Timperley", 53.3961251, -2.320175)
 ```
 
 ```{css}
@@ -264,7 +279,7 @@ league_table <- reactable(weekly_cases,
           borderless = FALSE,
           wrap = FALSE,
           resizable = TRUE,
-          defaultSorted = "current_week_rate",
+          defaultSorted = "change_rate",
           defaultSortOrder = "desc",
           defaultColDef = colDef(align = "left"),
           rowStyle = function(index) {
@@ -278,9 +293,9 @@ league_table <- reactable(weekly_cases,
             },
           columns = list(
             area_name = colDef(name = "", sortable = FALSE, align = "left"),
-            previous_week_rate = colDef(header = paste(format(max(phe_dashboard$date)-days(15),'%d %B'),"-", format(max(phe_dashboard$date)-days(9),'%d %B')),
+            previous_week_rate = colDef(header = paste(format(max(phe_dashboard$date)-days(15),'%d %b'),"-", format(max(phe_dashboard$date)-days(9),'%d %b')),
                                         align = "left"),
-            current_week_rate = colDef(header = paste(format(max(phe_dashboard$date)-days(8),'%d %B'),"-", format(max(phe_dashboard$date)-days(2),'%d %B')), 
+            current_week_rate = colDef(header = paste(format(max(phe_dashboard$date)-days(8),'%d %b'),"-", format(max(phe_dashboard$date)-days(2),'%d %b')), 
                                        align = "left"),
             change_rate = colDef(name = "Change", align = "left"))
 )
@@ -331,7 +346,7 @@ england_cases <- phe_dashboard %>%
 
 div(class = "subtitle",
     div(class = "title", "Weekly incidence per 100,000 population by local authority"),
-    paste("Greater Manchester (England = grey line),", format(max(phe_dashboard$date-weeks(10)), "%d %B"), "to", format(max(phe_dashboard$date-days(2)), "%d %B %Y")))
+    paste("Greater Manchester,", format(max(phe_dashboard$date-weeks(10)), "%d %B"), "to", format(max(phe_dashboard$date-days(2)), "%d %B %Y")))
 
 ggplot(data = local_trend, aes(x = week, y = rate_cases, group = area_name)) +
   geom_hline(yintercept = 0, size = 1, colour = "#333333") +
@@ -339,7 +354,8 @@ ggplot(data = local_trend, aes(x = week, y = rate_cases, group = area_name)) +
   annotate(geom = 'line', x = england_cases$week, y = england_cases$rate_cases, colour = "#bdbdbd",  size = 0.6) +
   scale_x_date(expand = c(0.005, 0.005), date_labels = "%d %b") +
   scale_y_continuous(expand = c(0.005, 0.005), position = "right") +
-  labs(x = "Specimen date", y = NULL, title = NULL, subtitle = NULL, caption = NULL) +
+  labs(x = "Specimen date", y = NULL, title = NULL, subtitle = NULL, 
+       caption = NULL, tag = "England = grey line") +
   facet_wrap(~area_name, nrow = 2) +
   theme_minimal() +
   theme(plot.margin = unit(rep(0.5, 4), "cm"),
@@ -348,7 +364,9 @@ ggplot(data = local_trend, aes(x = week, y = rate_cases, group = area_name)) +
         panel.grid.minor = element_blank(),
         axis.title.x = element_text(size = 10, hjust = 0, margin = margin(t = 10)),
         strip.text = element_text(face = "bold", hjust = 0),
-        axis.text.x = element_text(angle = 90, size = 9))
+        axis.text.x = element_text(angle = 90, size = 9),
+        plot.tag.position = c(0.87, 1.01),
+        plot.tag = element_text(size = 9, colour = "#757575", hjust = 0))
 
 div(class = "caption", p("Source: PHE Coronavirus Dashboard"))
 ```
@@ -360,64 +378,32 @@ div(class = "caption", p("Source: PHE Coronavirus Dashboard"))
 <div class="row">
 <div class = "col-sm-6">
 <div class = "div">
-```{r wards}
-ward_cases <- cases %>% 
+```{r, dev = 'svg'}
+div(class = "subtitle",
+    div(class = "title", "Distribution of positive cases in Trafford"),
+    paste("Trafford,", format(max(cases$date)-days(6), "%d %B"), "to", format(max(cases$date), "%d %B %Y")))
+
+rpt_locs <- cases %>% 
+  filter(date >= max(date)-days(6)) %>% 
   left_join(postcodes, by = c("Patient Postcode" = "postcode")) %>% 
-  group_by(wd19nm, date) %>% 
-  summarise(n = n()) %>% 
-  ungroup() %>% 
-  arrange(wd19nm, date) %>% 
-  complete(wd19nm = wd19nm,
-           date = seq.Date(min(date), max(date), by = "day")) %>% 
-  mutate(n = replace_na(n, 0)) %>% 
-  ungroup() %>% 
-  fill(date) %>% 
-  mutate(period = case_when(
-    date >= max(date)-days(6) & date <= max(date) ~ "current_week",
-    date >= max(date)-days(13) & date <= max(date)-days(7) ~ "previous_week"
-  )) %>% 
-  filter(!is.na(period)) %>% 
-  select(-date) %>%
-  group_by(wd19nm, period) %>% 
-  summarise(n = sum(n)) %>% 
-  pivot_wider(names_from = period, values_from = n) %>% 
-  select(wd19nm, previous_week, current_week) %>% 
-  left_join(ward_population, by = "wd19nm") %>% 
-  mutate(previous_week_rate = round(previous_week/population*100000,1),
-         current_week_rate = round(current_week/population*100000,1),
-         change = current_week-previous_week,
-         change_rate = round(change/population*100000,1)) %>% 
-  ungroup() %>% 
-  select(wd19nm, previous_week_rate, current_week_rate, change_rate)
+  select(wd19nm, lon, lat) %>% 
+  group_by(lon, lat) %>%
+  summarise(n = n()) %>%
+  ungroup() %>%
+  arrange(desc(n)) %>% 
+  st_as_sf(crs = 4326, coords = c("lon", "lat"))
 
-ward_table <- reactable(
-  ward_cases, 
-  defaultPageSize = 7,
-  paginationType = "simple",
-  resizable = TRUE,
-  defaultSorted = "current_week_rate",
-  defaultSortOrder = "desc",
-  defaultColDef = colDef(align = "left"),
-  defaultColGroup = colGroup(align = "left"), 
-  columns = list(
-    wd19nm = colDef(name = "", align = "left"),
-    previous_week_rate = colDef(header = paste(format(max(cases$date)-days(13),'%d %B'),"-", format(max(cases$date)-days(7),'%d %B')),
-                                        align = "left"),
-    current_week_rate = colDef(header = paste(format(max(cases$date)-days(6),'%d %B'),"-", format(max(cases$date),'%d %B')), 
-                                       align = "left"),
-    change_rate = colDef(name = "Change", align = "left")
-)
-)
+ggplot() +
+  geom_sf(data = ward_boundaries, fill = "#F2F2F2", colour = "#FFFFFF", size = 1) +
+  geom_sf(data = rpt_locs, aes(size = n), shape = 21, colour = "#FFFFFF", fill = "#39809E", alpha = 0.5) +
+  geom_shadowtext(data = town_centres, aes(x = lon, y = lat, label = name), size = 3.5, colour = "#000000", bg.colour = "#FFFFFF") +
+  labs(x = NULL, y = NULL, title = NULL, subtitle = NULL, caption = NULL, fill = NULL, size = "Number of cases") +
+  coord_sf(datum = NA) +
+  theme_void() +
+  theme(legend.title = element_text(face = "bold"),
+        legend.text = element_text(size = 12))
 
-div(class = "div",
-    div(class = "subtitle",
-        div(class = "title", "Weekly incidence per 100,000 population by ward"),
-        paste("Trafford, ", format(max(cases$date)-days(13), "%d %B"), "to", format(max(cases$date), "%d %B %Y"))
-        ),
-    br(),
-    ward_table,
-    div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer"))
-    )
+div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer | ONS"))
 ```
 </div>
 </div>
@@ -475,6 +461,72 @@ div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer"))
 </div>
 
 <div class = "row">
+<div class = "col-sm-12">
+<div class = "div">
+```{r}
+ward_cases <- cases %>% 
+  left_join(postcodes, by = c("Patient Postcode" = "postcode")) %>% 
+  group_by(wd19nm, date) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  arrange(wd19nm, date) %>% 
+  complete(wd19nm = wd19nm,
+           date = seq.Date(min(date), max(date), by = "day")) %>% 
+  mutate(n = replace_na(n, 0)) %>% 
+  ungroup() %>% 
+  fill(date) %>% 
+  mutate(period = case_when(
+    date >= max(date)-days(6) & date <= max(date) ~ "current_week",
+    date >= max(date)-days(13) & date <= max(date)-days(7) ~ "previous_week"
+  )) %>% 
+  filter(!is.na(period)) %>% 
+  select(-date) %>%
+  group_by(wd19nm, period) %>% 
+  summarise(n = sum(n)) %>% 
+  pivot_wider(names_from = period, values_from = n) %>% 
+  select(wd19nm, previous_week, current_week) %>% 
+  left_join(ward_population, by = "wd19nm") %>% 
+  mutate(previous_week_rate = round(previous_week/population*100000,1),
+         current_week_rate = round(current_week/population*100000,1),
+         change = current_week-previous_week,
+         change_rate = round(change/population*100000,1)) %>% 
+  ungroup() %>% 
+  select(wd19nm, previous_week_rate, current_week_rate, change_rate)
+
+ward_table <- reactable(
+  ward_cases, 
+  defaultPageSize = 7,
+  paginationType = "simple",
+  resizable = TRUE,
+  defaultSorted = "change_rate",
+  defaultSortOrder = "desc",
+  defaultColDef = colDef(align = "left"),
+  defaultColGroup = colGroup(align = "left"), 
+  columns = list(
+    wd19nm = colDef(name = "", align = "left"),
+    previous_week_rate = colDef(header = paste(format(max(cases$date)-days(13),'%d %b'),"-", format(max(cases$date)-days(7),'%d %b')),
+                                        align = "left"),
+    current_week_rate = colDef(header = paste(format(max(cases$date)-days(6),'%d %b'),"-", format(max(cases$date),'%d %b')), 
+                                       align = "left"),
+    change_rate = colDef(name = "Change", align = "left")
+)
+)
+
+div(class = "div",
+    div(class = "subtitle",
+        div(class = "title", "Weekly incidence per 100,000 population by ward"),
+        paste("Trafford, ", format(max(cases$date)-days(13), "%d %B"), "to", format(max(cases$date), "%d %B %Y"))
+        ),
+    br(),
+    ward_table,
+    div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer | ONS"))
+    )
+```
+</div>
+</div>
+</div>
+
+<div class = "row">
 <div class = "col-sm-6">
 <div class = "div">
 ```{r, dev = 'svg'}
@@ -503,8 +555,8 @@ pyramid <- left_join(ageband, age) %>%
          n = replace_na(n, 0),
          rate = n/population*100000)
 
-spacing = 17
-breaks = seq(0, max(pyramid$rate), by = 20)
+spacing = 50
+breaks = seq(0, max(pyramid$rate), by = 50)
 
 pyramid_data <- pyramid %>% 
   mutate(rate = case_when(gender == "Male" ~ as.numeric(rate) * -1, TRUE ~ as.numeric(rate)),
@@ -540,10 +592,6 @@ div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer | 
 <div class = "div">
 ```{r, dev = 'svg'}
 # Ethnicity
-div(class = "subtitle",
-    div(class = "title", "Incidence per 100,000 population by ethnicity"),
-    paste("Trafford,", format(max(cases$date)-days(6), "%d %B"), "to", format(max(cases$date), "%d %B %Y")))
-
 ethnic_group <- cases %>% 
   # last 7 days
   filter(date >= max(date)-days(6) & date <= max(date)) %>% 
@@ -560,31 +608,46 @@ ethnic_group <- cases %>%
   ungroup() %>% 
   filter(ethnic_group != "Not known")
 
-left_join(ethnicity, ethnic_group, by = "ethnic_group") %>% 
-  mutate(rate = n/population*100000,1) %>% 
-  ggplot() +
-  geom_col(aes(x = rate, y = fct_reorder(ethnic_group, rate)), fill = "#CB6598", width = 0.8) +
-  geom_vline(xintercept = 0, size = 1, colour = "#333333") +
-  geom_label(aes(x = rate, y = ethnic_group, label = round(rate, 0)),
-             hjust = 1,  vjust = 0.5, 
-             colour = "#FFFFFF", fill = NA, label.size = NA, 
-             size = 6) +
-  scale_x_continuous(expand = c(0.005, 0.005)) +
-  labs(x = NULL, y = NULL, title = NULL, subtitle = NULL, caption = NULL) +
-  theme_minimal() +
-  theme(plot.margin = unit(rep(0.5, 4), "cm"),
-        panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank(),
-        axis.text.x = element_blank(),
-        axis.text.y = element_text(size = 12)) +
-  coord_cartesian(clip = "off")
+ethnic_group_table <- left_join(ethnicity, ethnic_group, by = "ethnic_group") %>% 
+  mutate(rate = round(n/population*100000,1)) %>% 
+  select(-population) %>% 
+  reactable( 
+    resizable = TRUE,
+    sortable = TRUE,
+    defaultSorted = "rate",
+    defaultSortOrder = "desc",
+    defaultColDef = colDef(align = "left"),
+    defaultColGroup = colGroup(align = "left"), 
+    columns = list(
+      ethnic_group = colDef(name = "Ethnic group"),
+      n = colDef(name = "n", format = colFormat(separators = TRUE)),
+      rate = colDef(name = "per 100,000", format = colFormat(separators = TRUE))
+    ),
+    columnGroups = list(
+      colGroup(name = "Cases in last 7 days", columns = c("n", "rate"))
+    )
+  )
 
-div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer | 2011 Census"))
+div(class = "div",
+    div(class = "subtitle",
+        div(class = "title", "Case count and incidence per 100,000 population by ethnicity"),
+        paste("Trafford,", format(max(cases$date)-days(6), "%d %B"), "to", format(max(cases$date), "%d %B %Y"))
+    ),
+    br(),
+    ethnic_group_table,
+    div(class = "caption", p("Source: PHE Daily COVID-19 Surveillance Reports"))
+)
 ```
 </div>
 </div>
 </div>
 </div>
 <br /><br />
+
+**Notes**
+
+- Patients who self-identify as Chinese or as belonging to "Any other ethnic group" are classified as "Other." This follows the ethnicity classification used by Hospital Episode Statistics (see Appendix B of Public Health England's [Disparities in the risk and outcomes of COVID-19](https://assets.publishing.service.gov.uk/government/uploads/system/uploads/attachment_data/file/908434/Disparities_in_the_risk_and_outcomes_of_COVID_August_2020_update.pdf) report for a comparison with ONS classifications).
+
+---
 
 
