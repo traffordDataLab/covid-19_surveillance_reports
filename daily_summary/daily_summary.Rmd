@@ -8,23 +8,23 @@ knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 
 library(tidyverse) ; library(sf) ; library(lubridate) ; library(zoo) ; library(reactable) ; library(classInt) ; library(leaflet) ; library(htmltools) ; library(htmlwidgets) ; library(shadowtext)
 
+## Note that a 4-day lag has been applied to cases retrieved from PHE surveillance systems. This affects the cases data frame.
+
 # UPDATE POSITIVITY RATE!! #
 # Source: PHE Daily COVID-19 Surveillance Reports
-fortnight_ending <- as.Date("2020-09-30")
+fortnight_ending <- as.Date("2020-11-29")
 positivity <- tribble(
-  ~pillar, ~cases, ~tests,
-  "Pillar 1", NA, NA,
-  "Pillar 2", NA, NA,
-  "Total", NA, NA) %>% 
-  mutate(case_rate = round(cases/237354*100000,1),
-         test_rate = round(tests/237354*100000,0),
-         positivity_rate = round(cases/tests*100,1)) %>% 
-  select(pillar, tests, test_rate, positivity_rate)
+  ~pillar, ~tests, ~test_rate, ~positivity_rate,
+  "Pillar 1", NA, NA, NA,
+  "Pillar 2", NA, NA, NA,
+  "Total", NA, NA, NA) 
 
 # Confirmed cases: official sensitive data
 # Source: PHE Covid-19 Situational Awareness Explorer
 cases <- read_csv("../data/data.csv") %>% 
-  mutate(date = as.Date(`Specimen Date`, format = "%Y-%m-%d"))
+  mutate(date = as.Date(`Specimen Date`, format = "%Y-%m-%d")) %>% 
+  # add 4-day lag 
+  filter(date <= max(date)-days(3))
 
 # Confirmed cases: open data
 # Source: PHE Coronavirus Dashboard, Public Health England
@@ -116,7 +116,7 @@ town_centres <- tribble(
 }
 ```
 
-*This summary draws on a number of PHE data sources which have different publication times so the most recent reporting date will vary slightly.*
+*This summary draws on a number of Public Health England data sources which have different publication times so the most recent reporting date will vary slightly. A four day lag has been added to the cases retrieved from the PHE Covid-19 Situational Awareness Explorer because of reporting delays.*
 
 <br />
 ```{r}
@@ -180,7 +180,7 @@ historic_cases <- read_csv("../data/data.csv") %>%
   mutate(n = replace_na(n, 0)) %>% 
   ungroup() %>% 
   fill(date) %>% 
-  mutate(ma_cases = rollmean(n, 7, align = "left", fill = NA))
+  mutate(ma_cases = rollmean(n, 7, align = "center", fill = NA))
 
 div(class = "subtitle",
     div(class = "title", "Epidemic curve of daily confirmed new cases"),
@@ -194,7 +194,7 @@ ggplot() +
   scale_x_date(expand = c(0.005, 0.005), date_labels = "%B") +
   scale_y_continuous(expand = c(0.005, 0.005), breaks = function(x) unique(
     floor(pretty(seq(0, (max(x) + 1) * 1.1)))), position = "right") +
-  labs(x = "Specimen date", y = NULL, title = NULL, subtitle = NULL, caption = NULL, tag = "Incomplete cases are shaded in grey") +
+  labs(x = "Specimen date", y = NULL, title = NULL, subtitle = NULL, caption = NULL , tag = "Incomplete cases are shaded in grey") +
   theme_minimal() +
   theme(plot.margin = unit(rep(0.5, 4), "cm"),
         panel.background = element_blank(),
@@ -266,10 +266,9 @@ weekly_cases <- phe_dashboard %>%
   left_join(population, by = "area_code") %>% 
   mutate(previous_week_rate = round(previous_week/population*100000,1),
          current_week_rate = round(current_week/population*100000,1),
-         change = current_week-previous_week,
-         change_rate = round(change/population*100000,1)) %>% 
+         percent_change = (current_week_rate-previous_week_rate)/previous_week_rate) %>% 
   ungroup() %>%
-  select(area_name, previous_week_rate, current_week_rate, change_rate) %>% filter(area_name != c("Greater Manchester", "England"))
+  select(area_name, previous_week_rate, current_week_rate, percent_change) %>% filter(area_name != c("Greater Manchester", "England"))
 
 league_table <- reactable(weekly_cases, 
           defaultPageSize = 12,
@@ -279,7 +278,7 @@ league_table <- reactable(weekly_cases,
           borderless = FALSE,
           wrap = FALSE,
           resizable = TRUE,
-          defaultSorted = "change_rate",
+          defaultSorted = "percent_change",
           defaultSortOrder = "desc",
           defaultColDef = colDef(align = "left"),
           rowStyle = function(index) {
@@ -297,8 +296,8 @@ league_table <- reactable(weekly_cases,
                                         align = "left"),
             current_week_rate = colDef(header = paste(format(max(phe_dashboard$date)-days(8),'%d %b'),"-", format(max(phe_dashboard$date)-days(2),'%d %b')), 
                                        align = "left"),
-            change_rate = colDef(name = "Change", align = "left"))
-)
+            percent_change = colDef(name = "% change", format = colFormat(percent = TRUE, digits = 1), align = "left"))
+          )
 
 div(class = "div",
     div(class = "subtitle",
@@ -385,7 +384,7 @@ div(class = "subtitle",
 
 rpt_locs <- cases %>% 
   filter(date >= max(date)-days(6)) %>% 
-  left_join(postcodes, by = c("Patient Postcode" = "postcode")) %>% 
+  left_join(postcodes, by = c("Preferred Postcode" = "postcode")) %>% 
   select(wd19nm, lon, lat) %>% 
   group_by(lon, lat) %>%
   summarise(n = n()) %>%
@@ -397,10 +396,12 @@ ggplot() +
   geom_sf(data = ward_boundaries, fill = "#F2F2F2", colour = "#FFFFFF", size = 1) +
   geom_sf(data = rpt_locs, aes(size = n), shape = 21, colour = "#FFFFFF", fill = "#39809E", alpha = 0.5) +
   geom_shadowtext(data = town_centres, aes(x = lon, y = lat, label = name), size = 3.5, colour = "#000000", bg.colour = "#FFFFFF") +
+  scale_size_continuous(labels = scales::comma_format(accuracy = 1)) +
   labs(x = NULL, y = NULL, title = NULL, subtitle = NULL, caption = NULL, fill = NULL, size = "Number of cases") +
-  coord_sf(datum = NA) +
+  coord_sf(datum = NA, expand = FALSE) +
   theme_void() +
-  theme(legend.title = element_text(face = "bold"),
+  theme(plot.margin = unit(rep(0.5, 4), "cm"),
+        legend.title = element_text(face = "bold"),
         legend.text = element_text(size = 12))
 
 div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer | ONS"))
@@ -414,7 +415,7 @@ div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer | 
 # Match MSOA to postcodes -------------------
 msoa_cases <- cases %>% 
   filter(date >= max(date)-days(6) & date <= max(date)) %>%
-  left_join(postcodes, by = c("Patient Postcode" = "postcode")) %>% 
+  left_join(postcodes, by = c("Preferred Postcode" = "postcode")) %>% 
   group_by(msoa11cd) %>%
   summarise(n = n()) %>% 
   ungroup() 
@@ -425,7 +426,7 @@ msoa <- left_join(msoa_boundaries, msoa_cases, by = "msoa11cd") %>%
          rate = round(n/population*100000,0))
 
 # Set class intervals: natural breaks -------------------
-breaks <- classIntervals(msoa[msoa$rate > 0, ]$rate, n = 5, style = "jenks")$brks
+breaks <- classIntervals(msoa[msoa$rate > 0, ]$rate, n = 5, style = "quantile")$brks
 pal <- colorBin(palette = "Blues", domain = NULL, bins = breaks, na.color = "#FFFFFF")
 
 # Create label text  -------------------
@@ -465,7 +466,7 @@ div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer"))
 <div class = "div">
 ```{r}
 ward_cases <- cases %>% 
-  left_join(postcodes, by = c("Patient Postcode" = "postcode")) %>% 
+  left_join(postcodes, by = c("Preferred Postcode" = "postcode")) %>% 
   group_by(wd19nm, date) %>% 
   summarise(n = n()) %>% 
   ungroup() %>% 
@@ -488,17 +489,16 @@ ward_cases <- cases %>%
   left_join(ward_population, by = "wd19nm") %>% 
   mutate(previous_week_rate = round(previous_week/population*100000,1),
          current_week_rate = round(current_week/population*100000,1),
-         change = current_week-previous_week,
-         change_rate = round(change/population*100000,1)) %>% 
+         percent_change = (current_week_rate-previous_week_rate)/previous_week_rate) %>% 
   ungroup() %>% 
-  select(wd19nm, previous_week_rate, current_week_rate, change_rate)
+  select(wd19nm, previous_week_rate, current_week_rate, percent_change)
 
 ward_table <- reactable(
   ward_cases, 
-  defaultPageSize = 7,
+  defaultPageSize = 21,
   paginationType = "simple",
   resizable = TRUE,
-  defaultSorted = "change_rate",
+  defaultSorted = "percent_change",
   defaultSortOrder = "desc",
   defaultColDef = colDef(align = "left"),
   defaultColGroup = colGroup(align = "left"), 
@@ -508,7 +508,7 @@ ward_table <- reactable(
                                         align = "left"),
     current_week_rate = colDef(header = paste(format(max(cases$date)-days(6),'%d %b'),"-", format(max(cases$date),'%d %b')), 
                                        align = "left"),
-    change_rate = colDef(name = "Change", align = "left")
+   percent_change = colDef(name = "% change", format = colFormat(percent = TRUE, digits = 1), align = "left")
 )
 )
 
@@ -555,8 +555,8 @@ pyramid <- left_join(ageband, age) %>%
          n = replace_na(n, 0),
          rate = n/population*100000)
 
-spacing = 50
-breaks = seq(0, max(pyramid$rate), by = 50)
+spacing = 40
+breaks = seq(0, max(pyramid$rate), by = 100)
 
 pyramid_data <- pyramid %>% 
   mutate(rate = case_when(gender == "Male" ~ as.numeric(rate) * -1, TRUE ~ as.numeric(rate)),
@@ -635,7 +635,7 @@ div(class = "div",
     ),
     br(),
     ethnic_group_table,
-    div(class = "caption", p("Source: PHE Daily COVID-19 Surveillance Reports"))
+    div(class = "caption", p("Source: PHE Covid-19 Situational Awareness Explorer | ONS"))
 )
 ```
 </div>
