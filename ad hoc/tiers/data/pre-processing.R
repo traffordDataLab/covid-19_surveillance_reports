@@ -5,7 +5,7 @@ library(tidyverse) ; library(httr) ; library(readODS) ; library(readxl)
 library(lubridate) ; library(janitor) ; library(scales)
 
 ### Check week-ending date in data - used to filter subsequent indicators
-end_date <- as.Date("2020-11-25")
+end_date <- as.Date("2020-12-02")
 
 # Local restriction tiers ------------------------------------------------------
 # Source: Department of Health and Social Care
@@ -28,7 +28,7 @@ tiers <- read_ods(tmp) %>%
 # Mid-2019 population estimates ------------------------------------------------
 # Source: Nomis / ONS
 # URL: https://www.nomisweb.co.uk/datasets/pestsyoala
-population <- read_csv("http://www.nomisweb.co.uk/api/v01/dataset/NM_2002_1.data.csv?geography=1811939329...1811939332,1811939334...1811939336,1811939338...1811939497,1811939499...1811939501,1811939503,1811939505...1811939507,1811939509...1811939517,1811939519,1811939520,1811939524...1811939570,1811939575...1811939599,1811939601...1811939628,1811939630...1811939634,1811939636...1811939647,1811939649,1811939655...1811939664,1811939667...1811939680,1811939682,1811939683,1811939685,1811939687...1811939704,1811939707,1811939708,1811939710,1811939712...1811939717,1811939719,1811939720,1811939722...1811939730,1811939757...1811939767&date=latest&gender=0&c_age=200,14...18,210&measures=20100&select=date_name,geography_name,geography_code,gender_name,c_age_name,measures_name,obs_value,obs_status_name") %>% 
+population <- read_csv("http://www.nomisweb.co.uk/api/v01/dataset/NM_2002_1.data.csv?geography=1820327937...1820328318&date=latest&gender=0&c_age=200,14...18,210&measures=20100&select=date_name,geography_name,geography_code,gender_name,c_age_name,measures_name,obs_value,obs_status_name") %>% 
   rename(area_code = GEOGRAPHY_CODE, ageband = C_AGE_NAME, population = OBS_VALUE) %>% 
   filter(str_detect(area_code, "^E")) %>% 
   # combine those aged 60 years and over
@@ -48,7 +48,7 @@ population <- read_csv("http://www.nomisweb.co.uk/api/v01/dataset/NM_2002_1.data
 # Pillar 1 and 2 tests ---------------------------------------------------------------
 # Source: Demographic and regional information for people tested and testing positive, NHS Test & Trace
 # URL: https://www.gov.uk/government/collections/nhs-test-and-trace-statistics-england-weekly-reports
-url <- "https://assets.publishing.service.gov.uk/government/uploads/system/uploads/attachment_data/file/940822/Demographic_LA_tables_w26.ods"
+url <- "https://assets.publishing.service.gov.uk/government/uploads/system/uploads/attachment_data/file/943032/Demographic_LA_tables_w27.ods"
 GET(url, write_disk(tmp <- tempfile(fileext = ".ods")))
 tests <- read_ods(tmp, sheet = 8, skip = 2) %>% 
   select(area_code = LTLA, tests = last_col(1)) %>% 
@@ -148,31 +148,11 @@ ltla_catchment <- left_join(msoa, catchment, by = "msoa11cd") %>%
 # Source: NHS COVID-19 Hospital Activity
 # URL: https://www.england.nhs.uk/statistics/statistical-work-areas/covid-19-hospital-activity
 tmp <- tempfile(fileext = ".xlsx")
-GET(url = "https://www.england.nhs.uk/statistics/wp-content/uploads/sites/2/2020/12/Weekly-covid-admissions-and-beds-publication-201203.xlsx",
+GET(url = "https://www.england.nhs.uk/statistics/wp-content/uploads/sites/2/2020/12/Covid-Publication-10-12-2020.xlsx",
     write_disk(tmp))
 
-# Hospital bed occupancy
-occupancy <- read_xlsx(tmp, sheet = "All beds COVID", skip = 14) %>% 
-  filter(!is.na(Code), Code != "-") %>% 
-  select(trust_code = Code, trust_name = Name, starts_with("4")) %>% 
-  pivot_longer(cols = -c(trust_code, trust_name), names_to = "date", values_to = "occupancy") %>% 
-  mutate(trust_name = str_to_title(trust_name),
-         date = excel_numeric_to_date(as.numeric(as.character(date)), date_system = "modern"),
-         occupancy = replace_na(occupancy, 0)) %>% 
-  filter(date == end_date)
-
-prop_occupancy <- left_join(ltla_catchment, occupancy, by = "trust_code") %>% 
-  mutate(prop_occupancy = occupancy*proportion,
-         prop_occupancy = replace_na(prop_occupancy, 0)) %>% 
-  group_by(area_code) %>% 
-  summarise(estimated_occupancy = sum(prop_occupancy)) %>% 
-  mutate(estimated_occupancy = replace_na(estimated_occupancy, 0)) %>% 
-  left_join(population, by = "area_code") %>% 
-  mutate(estimated_occupancy_rate = round(estimated_occupancy/`All Ages`*100000,1)) %>% 
-  select(area_code, estimated_occupancy_rate)
-
 # Hospital admissions
-admissions <- read_xlsx(tmp, sheet = "Hosp ads & diag", skip = 14) %>% 
+admissions <- read_xlsx(tmp, sheet = "Admissions Total", skip = 12) %>% 
   filter(!is.na(Code), Code != "-") %>% 
   select(trust_code = Code, trust_name = Name, starts_with("4")) %>% 
   pivot_longer(cols = -c(trust_code, trust_name), names_to = "date", values_to = "admissions") %>% 
@@ -191,11 +171,31 @@ prop_admissions <- left_join(ltla_catchment, admissions, by = "trust_code") %>%
   mutate(estimated_admissions_rate = round(estimated_admissions/`All Ages`*100000,1)) %>% 
   select(area_code, estimated_admissions_rate)
 
+# Hospital bed occupancy
+occupancy <- read_xlsx(tmp, sheet = "Total Beds Occupied Covid", skip = 11) %>% 
+  filter(!is.na(Code), Code != "-") %>% 
+  select(trust_code = Code, trust_name = Name, starts_with("4")) %>% 
+  pivot_longer(cols = -c(trust_code, trust_name), names_to = "date", values_to = "occupancy") %>% 
+  mutate(trust_name = str_to_title(trust_name),
+         date = excel_numeric_to_date(as.numeric(as.character(date)), date_system = "modern"),
+         occupancy = replace_na(occupancy, 0)) %>% 
+  filter(date == end_date)
+
+prop_occupancy <- left_join(ltla_catchment, occupancy, by = "trust_code") %>% 
+  mutate(prop_occupancy = occupancy*proportion,
+         prop_occupancy = replace_na(prop_occupancy, 0)) %>% 
+  group_by(area_code) %>% 
+  summarise(estimated_occupancy = sum(prop_occupancy)) %>% 
+  mutate(estimated_occupancy = replace_na(estimated_occupancy, 0)) %>% 
+  left_join(population, by = "area_code") %>% 
+  mutate(estimated_occupancy_rate = round(estimated_occupancy/`All Ages`*100000,1)) %>% 
+  select(area_code, estimated_occupancy_rate)
+
 # Combining indicators ---------------------------------------------------------
 indicators <- left_join(cases_all_groups, cases_over_60s, by = "area_code") %>% 
   left_join(tests, by = "area_code") %>% 
-  left_join(prop_occupancy, by = "area_code") %>% 
   left_join(prop_admissions, by = "area_code") %>% 
+  left_join(prop_occupancy, by = "area_code") %>% 
   left_join(tiers, by = "area_name") %>% 
   mutate(positivity_rate = round(cases/tests*100,1)) %>% 
   select(area_code, area_name, tier, case_rate, case_rate_over_60s, growth_rate, positivity_rate, estimated_admissions_rate, estimated_occupancy_rate)

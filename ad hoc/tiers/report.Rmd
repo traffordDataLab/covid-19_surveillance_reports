@@ -6,7 +6,9 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
 
-library(tidyverse) ; library(reactable) ; library(lemon) ; library(ggtext) ; library(ggrepel)
+library(tidyverse) ; library(lubridate) ; library(reactable) ; library(lemon) ; library(ggtext) ; library(ggrepel)
+
+end_date <- as.Date("2020-12-02")
 
 scores <- read_csv("data/covid19_combined_risk_scores.csv") %>% 
   arrange(desc(score)) %>% 
@@ -16,32 +18,32 @@ scores <- read_csv("data/covid19_combined_risk_scores.csv") %>%
 
 #### Overview
 
-This short report compares Greater Manchester's local authorities by the indicators used by Central Government to determine [local restriction tiers](https://www.gov.uk/government/news/tiering-decisions-to-be-made-through-national-command-structure) in England. The data shown cover the week ending 25 November 2020. 
+This short report compares Greater Manchester's local authorities by the indicators used by Central Government to determine [local restriction tiers](https://www.gov.uk/government/news/tiering-decisions-to-be-made-through-national-command-structure) in England. The data shown cover the week ending `r format(end_date, "%A %d %B %Y")`. 
 
 #### Data and method
 
 Local authorities have been allocated to local restriction tiers based on analysis of the following COVID-19 indicators:
 
-|Indicator |Source |
-|:--- |:--- |
-|Case rate (all age groups) | [Public Health England](https://coronavirus.data.gov.uk/details/download) |
-|Case rate (over-60s) | [Public Health England](https://coronavirus.data.gov.uk/details/download) |
-|Case growth rate | [Public Health England](https://coronavirus.data.gov.uk/details/download) |
-|Positivity rate | [NHS Test & Trace](https://www.gov.uk/government/collections/nhs-test-and-trace-statistics-england-weekly-reports) |
-|Hospital admissions | [NHS](https://www.england.nhs.uk/statistics/statistical-work-areas/covid-19-hospital-activity)  |
-|Hospital occupancy | [NHS](https://www.england.nhs.uk/statistics/statistical-work-areas/covid-19-hospital-activity) |
+|Indicator |Period |Source |
+|:--- |:--- |:--- |
+|Case rate per 100,000 population |`r paste(format(end_date-days(6), "%d %b"), "to", format(end_date, "%d %b"))` |[Public Health England](https://coronavirus.data.gov.uk/details/download) | 
+|Case rate per 100,000 population aged 60 years and over |`r paste(format(end_date-days(6), "%d %b"), "to", format(end_date, "%d %b"))` |[Public Health England](https://coronavirus.data.gov.uk/details/download) |
+|Case growth rate |`r paste(format(end_date-days(6), "%d %b"), "to", format(end_date, "%d %b"))` | [Public Health England](https://coronavirus.data.gov.uk/details/download) |
+|Positivity rate |`r paste(format(end_date-days(6), "%d %b"), "to", format(end_date, "%d %b"))` | [NHS Test & Trace](https://www.gov.uk/government/collections/nhs-test-and-trace-statistics-england-weekly-reports) |
+|Hospital admissions |`r format(end_date, "%d %b")` | [NHS](https://www.england.nhs.uk/statistics/statistical-work-areas/covid-19-hospital-activity)  |
+|Hospital occupancy |`r format(end_date, "%d %b")` | [NHS](https://www.england.nhs.uk/statistics/statistical-work-areas/covid-19-hospital-activity) |
 
-The method used by the [Joint Biosecurity Centre](https://www.gov.uk/government/groups/joint-biosecurity-centre) to allocate local authorities to tiers is not available so the following analysis adapts the [method](https://twitter.com/jburnmurdoch/status/1332233679704383488) used by [John Burn-Murdoch](https://twitter.com/jburnmurdoch) of the Finanical Times. It combines all of the indicators used to determine the local restricion tiers into a normalised risk score.
+The method used by the [Joint Biosecurity Centre](https://www.gov.uk/government/groups/joint-biosecurity-centre) to allocate local authorities to tiers is not publically available so the following analysis adapts the [method](https://twitter.com/jburnmurdoch/status/1332233679704383488) used by [John Burn-Murdoch](https://twitter.com/jburnmurdoch) of the Finanical Times. It combines all of the indicators used to determine the local restricion tiers into a normalised risk score.
 
 - Case, hospital admission and occupancy rates are calculated by dividing counts by estimates of the [mid-2019 population](https://www.nomisweb.co.uk/datasets/pestsyoala) multiplied by 100,000. 
-- Positivity rates were calulated by dividing the number of positive confirmed cases during the latest week by the number of Pillar 1 and 2 tests. 
+- Positivity rates are calulated by dividing the number of positive confirmed cases during the latest week by the total number of Pillar 1 and 2 tests. 
 - Hospital occupancy and admission numbers were apportioned to local authority areas using modelled estimates of MSOA [catchment populations](https://app.powerbi.com/view?r=eyJrIjoiODZmNGQ0YzItZDAwZi00MzFiLWE4NzAtMzVmNTUwMThmMTVlIiwidCI6ImVlNGUxNDk5LTRhMzUtNGIyZS1hZDQ3LTVmM2NmOWRlODY2NiIsImMiOjh9) calculated by Public Health England for each hospital trust.
 
 Lastly, a combined COVID-19 risk score was calculated by standardising each indicator to a z-score, averaging the scores in each local authority, and rescaling the result from 0 to 100.
 
 #### Results
 
-The table below shows the 7 indicators used to apportion local restriction tiers for local authorities in Greater Manchester during the week ending 25 November. The normalised score, which is scaled between 1 and 100, is shown alongside its rank relative to all other local authorities in England.
+The table below shows the 7 indicators used to apportion local restriction tiers for local authorities in Greater Manchester during the week ending `r format(end_date, "%d %B")`. The normalised score, which is scaled between 1 and 100, is shown alongside its rank relative to all other local authorities in England.
 
 ```{r table}
 filter(scores, area_name %in% c("Bolton", "Bury", "Manchester", "Oldham", "Rochdale", "Salford", "Stockport", "Tameside", "Trafford", "Wigan")) %>% 
@@ -83,7 +85,7 @@ ggplot(scores, aes(rank, score, fill = factor(tier))) +
   labs(x = "Rank of combined COVID-19 risk score",
        y = NULL,
        title = "Combined COVID-19 risk score",
-       subtitle = paste0("<span style = 'color:#757575;'>Restriction tiers by local authority, week ending 25 November</span>"),
+       subtitle = paste0("<span style = 'color:#757575;'>Restriction tiers by local authority, week ending ", format(end_date, '%d %B'), "</span>"),
        caption = "Normalised score of local restriction tier indicators\nData: PHE; NHS; DHSC; ONS\nCredits: @jburnmurdoch; @carlbaker; @VictimOfMaths\nPlot by @traffordDataLab") +
   facet_rep_grid(. ~ tier, scales = "free", space = "free") +
   theme_minimal() +
@@ -103,3 +105,6 @@ ggplot(scores, aes(rank, score, fill = factor(tier))) +
   coord_cartesian(clip = "off") +
   xlim(0,320)
 ```
+
+#### Limitations
+The absence of the methodology used by the Joint Biosecurity Centre (JBC) to allocate local authorities to tiers means that the distribution of scores shown in this report will not match the official ones. The JBC method will likely weight specific indicators e.g. place greater importance on case rates and an additional spatial weight will be used to account for local authorities that neighbour areas with higher or lower confirmed case rates.

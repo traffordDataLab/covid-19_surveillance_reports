@@ -109,7 +109,7 @@ left_join(lsoa_boundaries, lsoa_population, by = "lsoa11cd") %>%
 # Postcodes #
 
 # Source: ONS Open Geography Portal
-# URL: https://geoportal.statistics.gov.uk/datasets/ons-postcode-directory-may-2020
+# URL: https://geoportal.statistics.gov.uk/datasets/ons-postcode-directory-august-2020
 # Licence: Custom Licence
 
 url <- "https://www.arcgis.com/sharing/rest/content/items/a644dd04d18f4592b7d36705f93270d8/data"
